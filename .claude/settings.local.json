@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.tampaelectric.com)",
+      "WebFetch(domain:www.irs.gov)",
+      "WebFetch(domain:www.energystar.gov)",
+      "Bash(dir \"C:\\\\Users\\\\divya\\\\Repos\\\\ProjectRepo\\\\incentive-data-extraction-aiagent\\\\scrapers\" /b)",
+      "Bash(dir \"C:\\\\Users\\\\divya\\\\Repos\\\\ProjectRepo\\\\incentive-data-extraction-aiagent\\\\validators\" /b)",
+      "Bash(.venv/Scripts/python.exe pipeline.py --priority P0 --dry-run)",
+      "Bash(.venv/Scripts/python.exe -m pip install openpyxl)",
+      "Bash(.venv/Scripts/python.exe pipeline.py --priority P0)",
+      "Bash(.venv/Scripts/python.exe pipeline.py --priority P0 --source teco_smart_thermostat --output \"output/test_run.csv\")"
+    ]
+  }
+}

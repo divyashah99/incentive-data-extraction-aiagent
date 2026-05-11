@@ -1,0 +1,25 @@
+# Web scraping
+requests>=2.32.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+playwright>=1.44.0
+pdfplumber>=0.11.0
+
+# LangChain core
+langchain>=0.3.0
+langchain-core>=0.3.0
+
+# LLM providers (both free tier)
+langchain-groq>=0.2.0        # Groq — default provider (fastest, Llama 3.3 70B)
+langchain-google-genai>=2.0.0 # Google Gemini — fallback provider
+
+# Validation & config
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+PyYAML>=6.0.1
+
+# Excel output (multi-sheet workbook)
+openpyxl>=3.1.0
+
+# Retry / resilience
+tenacity>=8.3.0

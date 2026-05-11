@@ -1,0 +1,336 @@
+metadata:
+  geographic_focus:
+    state: "Florida"
+    city: "Tampa"
+    county: "Hillsborough County"
+  incentive_types:
+    - "Grants"
+    - "Rebates"
+    - "Finance Solutions"
+    - "Tax Credits"
+    - "Investments"
+
+# extraction_method controls how content is parsed after fetching:
+#   direct  → already structured JSON/data, fields mapped without any parser
+#   table   → page has clean HTML tables; BS4 table parser (no LLM, fast & cheap)
+#   llm     → prose / inconsistent layout; send to Groq/Gemini for extraction
+
+sources:
+  # ── P0: Highest Priority ─────────────────────────────────────────────────
+
+  - id: dsire_florida
+    name: "DSIRE Florida Incentive Database"
+    priority: P0
+    type: api
+    extraction_method: direct        # structured JSON → direct field mapping, no LLM
+    enabled: true
+    base_url: "https://programs.dsireusa.org/api/v1/programs"
+    api_params:
+      state: 12
+      length: 50
+    rate_limit_seconds: 1.0
+    notes: "DSIRE DataTables API returns clean JSON. No LLM needed."
+
+  - id: teco_ductwork
+    name: "TECO Rebate — Ductwork"
+    priority: P0
+    type: static_html
+    extraction_method: llm            # prose paragraphs, no tables
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/ductwork/"
+    rate_limit_seconds: 1.0
+    notes: "TECO ductwork rebate — $125/unit, prose layout."
+
+  - id: teco_ceiling_insulation
+    name: "TECO Rebate — Ceiling Insulation"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/ceilinginsulation/"
+    rate_limit_seconds: 1.0
+    notes: "TECO ceiling insulation rebate — prose layout."
+
+  - id: teco_heating_cooling
+    name: "TECO Rebate — Heating & Cooling"
+    priority: P0
+    type: static_html
+    extraction_method: llm            # tiered rebate amounts ($40/$550) in bullet lists
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/heatingcooling/"
+    rate_limit_seconds: 1.0
+    notes: "TECO heat pump rebates — two SEER tiers, bullet list layout."
+
+  - id: teco_new_construction
+    name: "TECO Rebate — Energy Star New Construction"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/energystarnewconstruction/"
+    rate_limit_seconds: 1.0
+    notes: "TECO Energy Star new construction rebate — prose layout."
+
+  - id: teco_smart_thermostat
+    name: "TECO Rebate — Energy Star Smart Thermostat"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/energystarsmartthermostat/"
+    rate_limit_seconds: 1.0
+    notes: "TECO smart thermostat rebate — up to $22, prose layout."
+
+  - id: teco_weatherization
+    name: "TECO Rebate — Weatherization"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.tampaelectric.com/residential/saveenergy/neighborhoodweatherization/"
+    rate_limit_seconds: 1.0
+    notes: "TECO neighborhood weatherization program — prose layout."
+
+  # ── P1: High Priority ─────────────────────────────────────────────────────
+
+  - id: my_safe_florida
+    name: "My Safe Florida Home Program"
+    priority: P1
+    type: static_html
+    extraction_method: llm           # WordPress prose, no tables — LLM extracts fields
+    enabled: true
+    url: "https://mysafeflhome.com"
+    rate_limit_seconds: 1.0
+    notes: >
+      Correct URL is mysafeflhome.com (not mysafefloridahome.com — different site).
+      myfloridacfo.com/mysafeflhome is a doormat redirect — skip it.
+      Key dynamic fields: grant amount (up to $10,000), portal open/closed status,
+      income priority groups. Program details are stable; funding/status change annually.
+
+  - id: irs_home_energy_hub
+    name: "IRS Home Energy Tax Credits — Master Hub"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.irs.gov/credits-deductions/home-energy-tax-credits"
+    rate_limit_seconds: 2.0
+    notes: >
+      Master overview page covering both 25C and 25D. ~1,400 words, fits LLM context.
+      Last reviewed 10-Mar-2026; cites Public Law 119-21 (signed July 4, 2025).
+      Watch this page for any new legislation revival or credit structure changes.
+
+  - id: irs_energy_credits
+    name: "IRS Energy Efficient Home Improvement Credit (25C)"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
+    rate_limit_seconds: 2.0
+    notes: >
+      25C detail page. ~3,200 words, fits LLM context.
+      Key amounts: 30% of costs; $1,200/yr cap ($2,000 for heat pumps/biomass).
+      Per-item caps: $250/door ($500 total), $600 windows, $150 energy audit.
+      Effective Jan 1 2023 – Dec 31 2025. Last reviewed 28-Apr-2026.
+
+  - id: irs_residential_clean_energy
+    name: "IRS Residential Clean Energy Credit (25D)"
+    priority: P0
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.irs.gov/credits-deductions/residential-clean-energy-credit"
+    rate_limit_seconds: 2.0
+    notes: >
+      25D detail page. ~2,000 words, fits LLM context.
+      30% of qualified costs; no annual dollar cap (fuel cell exception: $500 per 0.5kW).
+      Battery storage min 3kWh; carryforward allowed; phases out 2033.
+      Last reviewed Jan 12 2026.
+
+  - id: irs_obbba_legislation
+    name: "IRS — One Big Beautiful Bill Act Provisions"
+    priority: P1
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.irs.gov/newsroom/one-big-beautiful-bill-provisions"
+    rate_limit_seconds: 2.0
+    notes: >
+      Legislative update page (Public Law 119-21, signed July 4 2025).
+      WARNING: page is 15,000-18,000 words — LLM will only see first ~8,000 chars.
+      Energy credit expiry (Dec 31 2025) may or may not fall within the truncation window.
+      Include for change detection; treat extracted data as supplementary to 25C/25D pages.
+
+  - id: energystar_tax_credits
+    name: "ENERGY STAR Federal Tax Credits for Consumers"
+    priority: P1
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.energystar.gov/about/federal-tax-credits"
+    rate_limit_seconds: 1.0
+    notes: >
+      Plain-English summaries of 25C/25D credits — often updated before IRS pages.
+      ~3,800 words, fits LLM context. Good cross-check: $3,200/yr overall max,
+      $2,000 heat pumps (30%), $1,200 other improvements (30%), through Dec 31 2025.
+
+  - id: florida_housing_homebuyer
+    name: "Florida Housing Finance Corp — Homebuyer Programs"
+    priority: P1
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.floridahousing.org/programs/homebuyer-overview-page"
+    rate_limit_seconds: 2.0
+    notes: >
+      Fully server-rendered, no tables — linked-list + prose layout.
+      Key programs: FL Assist (up to $10,000 DPA, 0% deferred),
+      FL HLP Second Mortgage ($12,500 at 3%), HFA PLUS forgivable DPA (3/4/5%).
+
+  - id: florida_housing_ship
+    name: "Florida Housing Finance Corp — SHIP Program"
+    priority: P1
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.floridahousing.org/programs/special-programs/ship---state-housing-initiatives-partnership-program/ship---state-housing-initiatives-partnership-program-overview"
+    rate_limit_seconds: 2.0
+    notes: >
+      State Housing Initiatives Partnership (SHIP) — state funds distributed
+      to local govts including Hillsborough County. Prose layout, LLM extracts.
+
+  - id: florida_housing_hometown_heroes
+    name: "Florida Hometown Heroes Housing Program"
+    priority: P1
+    type: static_html
+    extraction_method: llm
+    enabled: true
+    url: "https://www.floridahousing.org/live-local-act/hometown-heroes-program"
+    rate_limit_seconds: 2.0
+    notes: >
+      Down payment/closing cost assistance for frontline workers (teachers, nurses,
+      first responders, military) buying in Florida. Fully server-rendered, prose layout.
+
+  - id: hillsborough_housing
+    name: "Hillsborough County Housing & Community Development"
+    priority: P1
+    type: static_html
+    extraction_method: llm           # prose paragraphs, no tables present
+    enabled: true
+    url: "https://hcfl.gov/government/grants/affordable-housing-funding-sources"
+    rate_limit_seconds: 1.0
+    notes: >
+      Single page, ~5,700 chars, fully within LLM context. No HTML tables.
+      Programs: SHIP, CDBG, HOME, HOME-ARP, CHDO, ESG — all locally administered
+      federal/state grants for Hillsborough County residents.
+
+  - id: hillsborough_oor
+    name: "Hillsborough County Owner-Occupied Rehabilitation (OOR) Program"
+    priority: P1
+    type: static_html
+    extraction_method: llm           # prose with 1 eligible-repairs table (not incentive data)
+    enabled: true
+    url: "https://hcfl.gov/residents/property-owners-and-renters/homeowners-and-neighborhoods/get-financial-assistance-with-home-repairs"
+    rate_limit_seconds: 1.0
+    notes: >
+      OOR program — interest-free deferred loan (portion forgiven every year, full
+      forgiveness in 5-15 years). SHIP-funded. Covers roof, HVAC, electrical, plumbing.
+      ~6,400 chars, 1 table (eligible repair types only), LLM extracts incentive details.
+
+  - id: hillsborough_dpa
+    name: "Hillsborough County Down Payment Assistance"
+    priority: P1
+    type: static_html
+    extraction_method: llm           # short prose page, ~1,200 chars
+    enabled: true
+    url: "https://hcfl.gov/residents/human-services/affordable-housing-assistance/down-payment-assistance"
+    rate_limit_seconds: 1.0
+    notes: >
+      HFA-administered DPA — 0% second mortgage for down payment and closing costs.
+      Two options: Home Sweet Home Hillsborough, Affordable Income Subsidy Grant.
+      ~1,200 chars, no tables, server-rendered.
+
+  - id: duke_energy_florida
+    name: "Duke Energy Florida — Home Energy Rebates Hub"
+    priority: P1
+    type: js_rendered                # Akamai/WAF blocks plain requests with 403
+    extraction_method: llm           # no tables; FAQ prose has all rebate amounts
+    enabled: true
+    url: "https://www.duke-energy.com/home/products/florida-savings"
+    rate_limit_seconds: 1.0
+    notes: >
+      Plain HTTP returns 403 (WAF/bot detection) — use Playwright. FAQ section has
+      all rebate amounts visible after render. ~3,700 chars.
+      Key amounts: Home Energy Improvement up to $3,800 total
+      (single-family: HVAC $1,000, windows $800, attic $800, ducts $450;
+      multifamily: HVAC $600, attic $350; manufactured: HVAC $600, ducts $450).
+      EnergyWise Home: up to $141/yr bill credits.
+
+  - id: duke_energy_clean_energy
+    name: "Duke Energy Florida — Clean Energy Connection"
+    priority: P1
+    type: js_rendered                # location selector requires JS; content JS-gated
+    extraction_method: llm
+    enabled: true
+    url: "https://www.duke-energy.com/home/products/clean-energy-connection"
+    rate_limit_seconds: 1.0
+    notes: >
+      Solar subscription program — bill credits at ~$0.04/kWh for first 36 months,
+      then 1.5% annual increase. No upfront cost. Income-qualified customers eligible
+      for immediate bill savings. ~3,300 chars rendered, no tables.
+
+  # ── P2: Standard Priority ─────────────────────────────────────────────────
+
+  - id: tampa_community_dev
+    name: "City of Tampa Housing & Community Development"
+    priority: P2
+    type: static_html
+    extraction_method: llm           # program detail page is prose
+    enabled: true
+    url: "https://www.tampa.gov/housing-and-community-development/apply-housing-rehabilitation-renovation-program-hrrp"
+    rate_limit_seconds: 1.0
+    notes: "Tampa HRRP program page — prose layout."
+
+  - id: fema_hazard_mitigation
+    name: "FEMA Hazard Mitigation Grant Program"
+    priority: P2
+    type: static_html
+    extraction_method: llm           # FEMA pages are dense regulatory prose
+    enabled: true
+    url: "https://www.fema.gov/grants/mitigation/hazard-mitigation"
+    rate_limit_seconds: 2.0
+    notes: "FEMA HMGP/BRIC — prose content."
+
+  - id: ygrene_pace
+    name: "Ygrene PACE Financing (Florida)"
+    priority: P2
+    type: static_html
+    extraction_method: llm           # marketing prose / inconsistent layout
+    enabled: true
+    url: "https://ygrene.com/florida/"
+    rate_limit_seconds: 1.0
+    notes: "PACE financing — marketing page, LLM normalises."
+
+  - id: renewpace
+    name: "RenewPACE Florida"
+    priority: P2
+    type: js_rendered
+    extraction_method: llm
+    enabled: false                   # CloudFront 403 — blocks both requests AND Playwright
+    url: "https://renewfinancial.com/renewpace-pace-financing-florida"
+    rate_limit_seconds: 1.0
+    notes: >
+      DISABLED — CloudFront WAF returns 403 to all programmatic clients including
+      Playwright (likely IP/datacenter detection). Would need a residential proxy
+      to scrape. PACE financing already covered by ygrene_pace source.
+
+  - id: florida_dept_energy
+    name: "Florida Dept. of Agriculture & Consumer Services — Energy"
+    priority: P2
+    type: js_rendered                # static fetch returns only 115 chars (JS shell)
+    extraction_method: llm
+    enabled: true
+    url: "https://www.fdacs.gov/Divisions-Offices/Energy"
+    rate_limit_seconds: 1.0
+    notes: "State energy programs — JS-rendered, requires Playwright."

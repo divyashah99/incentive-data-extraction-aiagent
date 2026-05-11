@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+logs/
+.playwright/
+*.egg-info/
+dist/
+build/
+.DS_Store
+logs/
