@@ -121,10 +121,11 @@ class OutputWriter:
 
             # Column widths (sensible per-column defaults; not auto-fit to stay fast)
             widths = {
-                "program_name": 40, "state": 10, "city": 18, "incentive_type": 18,
-                "property_type": 22, "description": 60, "eligibility_criteria": 45,
-                "incentive_amount": 28, "valid_until": 14, "updated_at": 14,
-                "review_needed": 12, "program_links": 40,
+                "program_name": 40, "state": 10, "city": 18, "zip_code": 16,
+                "incentive_type": 18, "property_type": 22, "description": 60,
+                "eligibility_criteria": 45, "incentive_amount": 28,
+                "valid_until": 14, "updated_at": 14, "review_needed": 12,
+                "program_links": 40,
             }
             for i, col in enumerate(CSV_COLUMNS, start=1):
                 ws.column_dimensions[get_column_letter(i)].width = widths.get(col, 20)

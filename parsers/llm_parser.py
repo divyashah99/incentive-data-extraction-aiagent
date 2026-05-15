@@ -44,6 +44,15 @@ class IncentiveExtraction(BaseModel):
         None,
         description="'Tampa' for city programs, 'Hillsborough County' for county-wide, null for statewide.",
     )
+    zip_code: str | None = Field(
+        None,
+        description=(
+            "ZIP code(s) where the program is valid, AS EXPLICITLY STATED in the source. "
+            "Single ZIP (e.g. '33601'), comma-separated list (e.g. '33601, 33602, 33603'), "
+            "or range (e.g. '33601-33647'). "
+            "Return null if not explicitly mentioned — do NOT infer ZIPs from city or county names."
+        ),
+    )
     incentive_type: str | None = Field(
         None,
         description=(
@@ -103,6 +112,9 @@ Field rules:
 3. program_name: exact official title of the program.
 4. state: "Florida" for all FL programs. Null only if genuinely unclear.
 5. city: "Tampa" for Tampa city programs; "Hillsborough County" for county-wide; null for statewide/federal.
+5a. zip_code: ZIP code(s) where the program applies, ONLY if explicitly listed on the page.
+    Examples: "33601", "33601, 33602, 33603", "33601-33647". Null otherwise.
+    NEVER infer ZIPs from city/county names — only extract if the source lists them verbatim.
 6. incentive_type: must be exactly one of — Grants, Rebates, Finance Solutions, Tax Credits, Investments.
    Grants = upfront money not repaid. Rebates = cash back after purchase.
    Finance Solutions = pay over time (loans, PACE). Tax Credits = reduce taxes owed.

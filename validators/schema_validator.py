@@ -23,6 +23,7 @@ CSV_COLUMNS = [
     "program_name",
     "state",
     "city",
+    "zip_code",
     "incentive_type",
     "property_type",
     "description",
@@ -39,6 +40,7 @@ class IncentiveRecord(BaseModel):
     program_name: str | None = None
     state: str | None = None
     city: str | None = None
+    zip_code: str | None = None
     incentive_type: str | None = None
     property_type: str | None = None
     description: str | None = None
@@ -122,6 +124,7 @@ def validate_record(raw: dict) -> IncentiveRecord | None:
                 program_name=raw.get("program_name"),
                 state=raw.get("state"),
                 city=raw.get("city"),
+                zip_code=raw.get("zip_code"),
                 incentive_type=raw.get("incentive_type"),
                 description=raw.get("description"),
                 incentive_amount=raw.get("incentive_amount"),

@@ -150,6 +150,7 @@ def _parse_dsire_program(prog: dict) -> dict:
         "program_name":         prog.get("name"),
         "state":                state,
         "city":                 None,
+        "zip_code":             None,   # DSIRE programs are statewide; no ZIP scoping
         "incentive_type":       incentive_type,
         "property_type":        property_type,
         "description":          description,
