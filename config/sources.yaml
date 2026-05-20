@@ -14,6 +14,10 @@ metadata:
 #   direct  → already structured JSON/data, fields mapped without any parser
 #   table   → page has clean HTML tables; BS4 table parser (no LLM, fast & cheap)
 #   llm     → prose / inconsistent layout; send to Groq/Gemini for extraction
+#
+# sheet_group (optional) — Excel output groups multiple sources into one sheet.
+#   Use the same value across related sources (e.g. all teco_* -> "Tampa Electric").
+#   If omitted, the source gets its own sheet keyed by `id`.
 
 sources:
   # ── P0: Highest Priority ─────────────────────────────────────────────────
@@ -37,6 +41,7 @@ sources:
     type: static_html
     extraction_method: llm            # prose paragraphs, no tables
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/ductwork/"
     rate_limit_seconds: 1.0
     notes: "TECO ductwork rebate — $125/unit, prose layout."
@@ -47,6 +52,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/ceilinginsulation/"
     rate_limit_seconds: 1.0
     notes: "TECO ceiling insulation rebate — prose layout."
@@ -57,6 +63,7 @@ sources:
     type: static_html
     extraction_method: llm            # tiered rebate amounts ($40/$550) in bullet lists
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/heatingcooling/"
     rate_limit_seconds: 1.0
     notes: "TECO heat pump rebates — two SEER tiers, bullet list layout."
@@ -67,6 +74,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/energystarnewconstruction/"
     rate_limit_seconds: 1.0
     notes: "TECO Energy Star new construction rebate — prose layout."
@@ -77,6 +85,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/energystarsmartthermostat/"
     rate_limit_seconds: 1.0
     notes: "TECO smart thermostat rebate — up to $22, prose layout."
@@ -87,6 +96,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Tampa Electric (TECO)"
     url: "https://www.tampaelectric.com/residential/saveenergy/neighborhoodweatherization/"
     rate_limit_seconds: 1.0
     notes: "TECO neighborhood weatherization program — prose layout."
@@ -113,6 +123,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Federal Tax Credits"
     url: "https://www.irs.gov/credits-deductions/home-energy-tax-credits"
     rate_limit_seconds: 2.0
     notes: >
@@ -126,6 +137,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Federal Tax Credits"
     url: "https://www.irs.gov/credits-deductions/energy-efficient-home-improvement-credit"
     rate_limit_seconds: 2.0
     notes: >
@@ -140,6 +152,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Federal Tax Credits"
     url: "https://www.irs.gov/credits-deductions/residential-clean-energy-credit"
     rate_limit_seconds: 2.0
     notes: >
@@ -154,6 +167,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Federal Tax Credits"
     url: "https://www.irs.gov/newsroom/one-big-beautiful-bill-provisions"
     rate_limit_seconds: 2.0
     notes: >
@@ -168,6 +182,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Federal Tax Credits"
     url: "https://www.energystar.gov/about/federal-tax-credits"
     rate_limit_seconds: 1.0
     notes: >
@@ -181,6 +196,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Florida Housing"
     url: "https://www.floridahousing.org/programs/homebuyer-overview-page"
     rate_limit_seconds: 2.0
     notes: >
@@ -194,6 +210,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Florida Housing"
     url: "https://www.floridahousing.org/programs/special-programs/ship---state-housing-initiatives-partnership-program/ship---state-housing-initiatives-partnership-program-overview"
     rate_limit_seconds: 2.0
     notes: >
@@ -206,6 +223,7 @@ sources:
     type: static_html
     extraction_method: llm
     enabled: true
+    sheet_group: "Florida Housing"
     url: "https://www.floridahousing.org/live-local-act/hometown-heroes-program"
     rate_limit_seconds: 2.0
     notes: >
@@ -218,6 +236,7 @@ sources:
     type: static_html
     extraction_method: llm           # prose paragraphs, no tables present
     enabled: true
+    sheet_group: "Hillsborough County"
     url: "https://hcfl.gov/government/grants/affordable-housing-funding-sources"
     rate_limit_seconds: 1.0
     notes: >
@@ -231,6 +250,7 @@ sources:
     type: static_html
     extraction_method: llm           # prose with 1 eligible-repairs table (not incentive data)
     enabled: true
+    sheet_group: "Hillsborough County"
     url: "https://hcfl.gov/residents/property-owners-and-renters/homeowners-and-neighborhoods/get-financial-assistance-with-home-repairs"
     rate_limit_seconds: 1.0
     notes: >
@@ -244,6 +264,7 @@ sources:
     type: static_html
     extraction_method: llm           # short prose page, ~1,200 chars
     enabled: true
+    sheet_group: "Hillsborough County"
     url: "https://hcfl.gov/residents/human-services/affordable-housing-assistance/down-payment-assistance"
     rate_limit_seconds: 1.0
     notes: >
@@ -251,12 +272,65 @@ sources:
       Two options: Home Sweet Home Hillsborough, Affordable Income Subsidy Grant.
       ~1,200 chars, no tables, server-rendered.
 
+  - id: hillsborough_hrrp
+    name: "Hillsborough County HRRP — Homeowner Repair & Reconstruction"
+    priority: P1
+    type: js_rendered                # Power Pages portal; content loads via JS
+    extraction_method: llm
+    enabled: true
+    sheet_group: "Hillsborough County"
+    url: "https://rebuildingfortomorrow.hcfl.gov/en-US/H/SFH/?id=cf6516e0-9f24-f111-8341-7ced8d6f4b5b"
+    rate_limit_seconds: 1.5
+    js_wait_seconds: 5               # Power Pages — needs full settle for accordions
+    js_expand_accordions: true       # expand collapsed <details> / Bootstrap collapse panes
+    notes: >
+      CDBG-DR Homeowner Repair & Reconstruction Program (HRRP) — disaster recovery
+      grants for homes damaged by Hurricanes Helene & Milton. Single-family homeowners.
+      Applications opened May 2026. Microsoft Power Pages site; requires Playwright.
+      Three award tiers (repair / reconstruction / reimbursement) live in accordions;
+      js_expand_accordions=true ensures all tiers are captured.
+
+  # - id: hillsborough_mfh
+  #   name: "Hillsborough County MFH — Multi-Family Housing Program"
+  #   priority: P1
+  #   type: js_rendered
+  #   extraction_method: llm
+  #   enabled: true
+  #   sheet_group: "Hillsborough County"
+  #   url: "https://rebuildingfortomorrow.hcfl.gov/en-US/H/MFH/?id=3ea96bfe-9f24-f111-8341-7ced8d6f4b5b"
+  #   rate_limit_seconds: 1.5
+  #   js_wait_seconds: 5
+  #   js_expand_accordions: true
+  #   notes: >
+  #     CDBG-DR Multi-Family Housing Program — grants for repair/replacement of
+  #     storm-damaged apartment buildings to restore affordable rental housing.
+  #     Opens June 2026 — page may be light on amounts/eligibility until launch;
+  #     records likely flagged review_needed=Yes until full program details publish.
+
+  # - id: hillsborough_sph
+  #   name: "Hillsborough County SPH — Special Population Housing Program"
+  #   priority: P1
+  #   type: js_rendered
+  #   extraction_method: llm
+  #   enabled: true
+  #   sheet_group: "Hillsborough County"
+  #   url: "https://rebuildingfortomorrow.hcfl.gov/en-US/H/SPH/?id=41b30fea-4b29-f111-8341-7ced8d6f4b5b"
+  #   rate_limit_seconds: 1.5
+  #   js_wait_seconds: 5
+  #   js_expand_accordions: true
+  #   notes: >
+  #     CDBG-DR Special Population Housing Program — targeted grants for seniors,
+  #     people with disabilities, and medically fragile populations. Covers housing
+  #     repair, replacement, or accessibility-focused development.
+  #     Opens June 2026 — page may be light on details until launch.
+
   - id: duke_energy_florida
     name: "Duke Energy Florida — Home Energy Rebates Hub"
     priority: P1
     type: js_rendered                # Akamai/WAF blocks plain requests with 403
     extraction_method: llm           # no tables; FAQ prose has all rebate amounts
     enabled: true
+    sheet_group: "Duke Energy Florida"
     url: "https://www.duke-energy.com/home/products/florida-savings"
     rate_limit_seconds: 1.0
     notes: >
@@ -273,6 +347,7 @@ sources:
     type: js_rendered                # location selector requires JS; content JS-gated
     extraction_method: llm
     enabled: true
+    sheet_group: "Duke Energy Florida"
     url: "https://www.duke-energy.com/home/products/clean-energy-connection"
     rate_limit_seconds: 1.0
     notes: >

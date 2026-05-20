@@ -46,6 +46,7 @@ from parsers.llm_parser import LLMParser
 from parsers.table_parser import parse_tables
 from validators.schema_validator import IncentiveRecord, validate_batch
 from validators.amount_validator import apply_amount_validation_batch
+from validators.zip_enricher import enrich_zip_codes
 
 
 @dataclass
@@ -63,6 +64,7 @@ class PipelineStats:
 def run_pipeline(
     priority_filter: str | None = None,
     source_filter: str | None = None,
+    group_filter: str | None = None,
     dry_run: bool = False,
     output_path: str = "output/extracted_tampa_incentives.csv",
 ) -> PipelineStats:
@@ -75,6 +77,7 @@ def run_pipeline(
     sources = discoverer.load_sources(
         priority_filter=priority_filter,
         source_filter=source_filter,
+        group_filter=group_filter,
     )
 
     if not sources:
@@ -156,14 +159,23 @@ def run_pipeline(
         # 3c. Rule-based amount validation (fast, before Pydantic)
         raw_records = apply_amount_validation_batch(raw_records)
 
+        # 3c.5: ZIP enrichment — fill zip_code from city/county scope when the
+        # LLM returned null (most program pages don't list ZIPs verbatim, but
+        # "Tampa" or "Hillsborough County" deterministically implies a ZIP set).
+        raw_records = enrich_zip_codes(raw_records)
+
         # 3d. Pydantic schema validation
         validated, failed = validate_batch(raw_records, source_id=source_id)
         stats.records_validated += len(validated)
         stats.validation_failures += failed
         stats.records_flagged_review += sum(1 for r in validated if r.review_needed == "Yes")
         all_records.extend(validated)
-        # Track records by source for the per-source Excel sheets
-        records_by_source.setdefault(source_id, []).extend(validated)
+        # Track records by sheet group for Excel output.
+        # Sources can opt into grouping by setting `sheet_group:` in sources.yaml
+        # (e.g. all hillsborough_* sources -> "Hillsborough County" sheet).
+        # Without sheet_group, each source gets its own sheet.
+        sheet_key = source.get("sheet_group") or source_id
+        records_by_source.setdefault(sheet_key, []).extend(validated)
 
         logger.info(
             "  -> %d extracted, %d validated (%d need review)",
@@ -207,7 +219,7 @@ def _print_summary(stats: PipelineStats, dry_run: bool) -> None:
     else:
         print("  Output (CSV)      : output/extracted_tampa_incentives.csv")
         print("  Output (XLSX)     : output/extracted_tampa_incentives.xlsx")
-        print("                      (multi-sheet: All Records + one per source)")
+        print("                      (multi-sheet: All Records + one per source group)")
     if stats.errors:
         print(f"\n  Errors ({len(stats.errors)}):")
         for err in stats.errors[:10]:
@@ -225,6 +237,7 @@ if __name__ == "__main__":
     )
     arg_parser.add_argument("--priority", choices=["P0", "P1", "P2"], help="Run only this priority tier")
     arg_parser.add_argument("--source", type=str, help="Run only this source ID (e.g. teco_rebates)")
+    arg_parser.add_argument("--group", type=str, help="Run only sources in this sheet group (e.g. 'Hillsborough County')")
     arg_parser.add_argument("--dry-run", action="store_true", help="Fetch and parse but do not write output CSV")
     arg_parser.add_argument(
         "--output",
@@ -237,6 +250,7 @@ if __name__ == "__main__":
     stats = run_pipeline(
         priority_filter=args.priority,
         source_filter=args.source,
+        group_filter=args.group,
         dry_run=args.dry_run,
         output_path=args.output,
     )
