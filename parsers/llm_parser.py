@@ -124,7 +124,16 @@ Field rules:
 8. description: 1-3 sentences summarising what the program offers.
 9. eligibility_criteria: who qualifies — income limits, ownership status, geography, equipment specs, etc.
 10. incentive_amount: amount exactly as stated, e.g. "$125 per unit", "30%", "Up to $3,200/year".
-    Include all tiers if a program has multiple (e.g. "$40 (SEER 16) / $550 (SEER 17+)").
+    CRITICAL — capture EVERY award cap / tier mentioned for the program. A single
+    program often has multiple caps for different use cases:
+      • Equipment tiers, e.g. "$40 (SEER 16) / $550 (SEER 17+)"
+      • Use-case tiers, e.g. "Up to $150,000 (repair); Up to $350,000 (reconstruction);
+        Up to $50,000 (reimbursement, $10,000 min)"
+      • Property tiers, e.g. "$1,000 single-family; $600 multifamily"
+    Concatenate all tiers into ONE field separated by "; ". DO NOT pick only the
+    first or smallest dollar figure. Scan the entire content for additional caps
+    before finalising this field — they may appear in separate paragraphs, bullet
+    lists, accordions, or FAQ sections.
 11. valid_until: expiry date if stated. Null if not mentioned.
 12. updated_at: date the program information was LAST UPDATED as shown on the page
     (e.g. "Last updated: March 2024"). Convert to YYYY-MM-DD if possible.

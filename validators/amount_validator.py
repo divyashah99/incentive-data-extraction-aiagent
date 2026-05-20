@@ -83,6 +83,41 @@ def validate_amount(raw_amount: str | None) -> AmountValidationResult:
     is_upto   = bool(_UPTO_RE.search(text))
     is_peryear = bool(_PERYEAR.search(text))
 
+    # ── Multi-tier amount? Preserve as-is ───────────────────────────────────
+    # Strings like "Up to $150,000 (repair); Up to $350,000 (reconstruction);
+    # Up to $50,000 (reimbursement)" carry essential program detail. Single-value
+    # normalisation would silently drop all tiers but the first. We only sanity-
+    # check the largest value, then return the string untouched.
+    dollar_matches = list(_DOLLAR_RE.finditer(text))
+    if len(dollar_matches) > 1:
+        values: list[float] = []
+        for m in dollar_matches:
+            try:
+                v = float(m.group("val").replace(",", "")) * _parse_multiplier(m.group("mult") or "")
+                values.append(v)
+            except (ValueError, TypeError):
+                continue
+        max_val = max(values) if values else None
+
+        # Sanity-check the largest tier (suspiciously high catches LLM parse errors
+        # like "$10,000,000,000"). We don't flag low values here because per-unit
+        # rates are common inside multi-tier strings.
+        flag, reason = False, None
+        if max_val is not None and max_val > _MAX_REASONABLE_DOLLAR:
+            flag = True
+            reason = f"suspiciously high amount: ${max_val:,.0f} — verify"
+
+        return AmountValidationResult(
+            original=raw_amount,
+            normalised=text,           # KEEP the multi-tier string intact
+            numeric_value=max_val,
+            is_percentage=False,
+            is_per_year=is_peryear,
+            is_up_to=is_upto,
+            flag=flag,
+            flag_reason=reason,
+        )
+
     # ── Try dollar amount first ─────────────────────────────────────────────
     dollar_match = _DOLLAR_RE.search(text)
     if dollar_match:

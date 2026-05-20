@@ -33,6 +33,7 @@ class JsScraper(BaseScraper):
         source_id = source.get("id", "unknown")
         wait_selector = source.get("js_wait_selector")
         extra_wait = float(source.get("js_wait_seconds", 0))  # extra settle time for slow SPAs
+        expand_accordions = bool(source.get("js_expand_accordions", False))
         headless = os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1"
 
         # Some SPAs (e.g. Duke Energy) keep polling analytics endpoints, so
@@ -73,6 +74,12 @@ class JsScraper(BaseScraper):
                     # Tiny default settle so dynamic content has a chance to render
                     await page.wait_for_timeout(1500)
 
+                # Optionally expand collapsed/accordion content so all text becomes
+                # visible to the extractor. Used for Power Pages-style portals where
+                # award tiers, eligibility, FAQs etc. live in collapsed panes.
+                if expand_accordions:
+                    await self._expand_accordions(page, url)
+
                 html = await page.content()
                 await browser.close()
 
@@ -94,6 +101,70 @@ class JsScraper(BaseScraper):
                 success=False,
                 error_message=str(exc),
             )
+
+    async def _expand_accordions(self, page, url: str) -> None:
+        """
+        Force-open all collapsed/accordion content on the page so its text is
+        captured by page.content(). Targets the patterns Power Pages, Bootstrap,
+        and most CMS templates use:
+
+          • <details>                  — set the `open` attribute
+          • .collapse                  — add `.show` class (Bootstrap 4/5 collapse)
+          • [aria-expanded="false"]    — flip to "true" + click the control
+          • [aria-hidden="true"]       — flip to "false" on content panes
+          • Buttons with text matching "show more", "read more", "expand", "learn more"
+
+        Implemented as one page.evaluate() call so we don't pay per-element click
+        latency. Failures here are non-fatal — we still extract whatever rendered.
+        """
+        js = r"""
+        () => {
+            let opened = 0;
+
+            // 1. Open all <details> elements
+            document.querySelectorAll('details').forEach(d => {
+                if (!d.open) { d.open = true; opened++; }
+            });
+
+            // 2. Force Bootstrap collapse panes open
+            document.querySelectorAll('.collapse:not(.show)').forEach(el => {
+                el.classList.add('show');
+                el.style.display = 'block';
+                opened++;
+            });
+
+            // 3. Flip aria-expanded and aria-hidden flags
+            document.querySelectorAll('[aria-expanded="false"]').forEach(el => {
+                el.setAttribute('aria-expanded', 'true');
+                opened++;
+            });
+            document.querySelectorAll('[aria-hidden="true"]').forEach(el => {
+                // Don't unhide globally-hidden chrome (modals, toasts) — only
+                // unhide elements that look like content panes.
+                if (el.matches('section, div, article, ul, ol, table, p, span')) {
+                    el.setAttribute('aria-hidden', 'false');
+                }
+            });
+
+            // 4. Click obvious "show more" / "expand" controls
+            const expandRe = /\b(show more|read more|expand|learn more|view (more|all)|see (more|details))\b/i;
+            document.querySelectorAll('button, a, [role="button"]').forEach(btn => {
+                const txt = (btn.innerText || btn.textContent || '').trim();
+                if (txt && expandRe.test(txt) && txt.length < 60) {
+                    try { btn.click(); opened++; } catch (e) {}
+                }
+            });
+
+            return opened;
+        }
+        """
+        try:
+            opened = await page.evaluate(js)
+            # Small settle so any animations / lazy-loaded sub-content can render
+            await page.wait_for_timeout(800)
+            logger.info("Expanded %d collapsed element(s) on %s", opened, url)
+        except Exception as exc:
+            logger.warning("Accordion expansion failed on %s: %s", url, exc)
 
     def _clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "lxml")

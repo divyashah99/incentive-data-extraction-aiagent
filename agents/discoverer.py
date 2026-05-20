@@ -28,6 +28,7 @@ class Discoverer:
         self,
         priority_filter: str | None = None,
         source_filter: str | None = None,
+        group_filter: str | None = None,
     ) -> list[dict]:
         """
         Load and filter sources from YAML.
@@ -49,6 +50,8 @@ class Discoverer:
             sources = [s for s in sources if s.get("priority") == priority_filter]
         if source_filter:
             sources = [s for s in sources if s.get("id") == source_filter]
+        if group_filter:
+            sources = [s for s in sources if s.get("sheet_group", "").lower() == group_filter.lower()]
 
         # Sort by priority
         sources.sort(key=lambda s: _PRIORITY_ORDER.get(s.get("priority", "P2"), 99))
