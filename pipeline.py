@@ -47,6 +47,7 @@ from parsers.table_parser import parse_tables
 from validators.schema_validator import IncentiveRecord, validate_batch
 from validators.amount_validator import apply_amount_validation_batch
 from validators.zip_enricher import enrich_zip_codes
+from validators.text_sanitizer import sanitize_batch
 
 
 @dataclass
@@ -158,6 +159,11 @@ def run_pipeline(
 
         # 3c. Rule-based amount validation (fast, before Pydantic)
         raw_records = apply_amount_validation_batch(raw_records)
+
+        # 3c.3: Strip URLs/links from description and eligibility_criteria so
+        # the dashboard never renders external CTAs in narrative fields. The
+        # canonical apply link stays in program_links.
+        raw_records = sanitize_batch(raw_records)
 
         # 3c.5: ZIP enrichment — fill zip_code from city/county scope when the
         # LLM returned null (most program pages don't list ZIPs verbatim, but

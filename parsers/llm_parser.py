@@ -38,7 +38,17 @@ VALID_INCENTIVE_TYPES = Literal[
 
 class IncentiveExtraction(BaseModel):
     """One incentive program extracted from source content."""
-    program_name: str | None = Field(None, description="Official name of the incentive program.")
+    program_name: str | None = Field(
+        None,
+        description=(
+            "Official name of the incentive program. For programs that have "
+            "multiple distinct award pathways (different application tracks, "
+            "each with its own eligibility and cap), use the format "
+            "'<Parent Program> — <Pathway Name>' "
+            "(e.g. 'HRRP — Storm Damage Repair', 'HRRP — Reconstruction & Replacement') "
+            "and emit one record per pathway."
+        ),
+    )
     state: str | None = Field(None, description="State name, e.g. 'Florida'. Null if unclear.")
     city: str | None = Field(
         None,
@@ -70,9 +80,21 @@ class IncentiveExtraction(BaseModel):
             "Do NOT use vague terms like 'Other', 'Neither', 'N/A', or 'Unknown' — use null instead."
         ),
     )
-    description: str | None = Field(None, description="1-3 sentence summary of what the program offers.")
+    description: str | None = Field(
+        None,
+        description=(
+            "Full summary of what the program offers — what kind of work it funds, "
+            "how the funding is delivered, and any program-purpose context. "
+            "Include all relevant details stated on the page; do not truncate."
+        ),
+    )
     eligibility_criteria: str | None = Field(
-        None, description="Who qualifies — income limits, ownership, property type, geography, etc."
+        None,
+        description=(
+            "All eligibility requirements stated on the page — income limits, "
+            "ownership status, property type, geography, equipment specs, occupancy, "
+            "primary-residence rules, etc. Include every criterion you find; do not summarise away."
+        ),
     )
     incentive_amount: str | None = Field(
         None, description="Amount as stated in source, e.g. '$10,000', '30%', 'Up to $3,200/year'."
@@ -102,45 +124,57 @@ class IncentivesOutput(BaseModel):
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are a structured data extraction specialist for clean energy and property incentive programs \
-in Tampa, FL and Hillsborough County.
-Extract ALL incentive programs from the provided content and return them as structured data.
+You extract clean energy and property incentive programs for Tampa, FL and \
+Hillsborough County from the provided content.
+
+Core rule: only use information EXPLICITLY stated in the source. Never infer,
+fabricate, or backfill from general knowledge — set unknowns to null.
 
 Field rules:
-1. Only extract information EXPLICITLY stated in the source. Never infer or fabricate values.
-2. If a field is not mentioned anywhere in the content, set it to null.
-3. program_name: exact official title of the program.
-4. state: "Florida" for all FL programs. Null only if genuinely unclear.
-5. city: "Tampa" for Tampa city programs; "Hillsborough County" for county-wide; null for statewide/federal.
-5a. zip_code: ZIP code(s) where the program applies, ONLY if explicitly listed on the page.
-    Examples: "33601", "33601, 33602, 33603", "33601-33647". Null otherwise.
-    NEVER infer ZIPs from city/county names — only extract if the source lists them verbatim.
-6. incentive_type: must be exactly one of — Grants, Rebates, Finance Solutions, Tax Credits, Investments.
-   Grants = upfront money not repaid. Rebates = cash back after purchase.
-   Finance Solutions = pay over time (loans, PACE). Tax Credits = reduce taxes owed.
-   Investments = large-scale equity or bond funding. Null if none apply.
-7. property_type: use the exact categories the source mentions (e.g. "Residential", "Commercial").
-   NEVER use vague terms like "Other", "Neither", "N/A", or "Unknown" — use null instead.
-8. description: 1-3 sentences summarising what the program offers.
-9. eligibility_criteria: who qualifies — income limits, ownership status, geography, equipment specs, etc.
-10. incentive_amount: amount exactly as stated, e.g. "$125 per unit", "30%", "Up to $3,200/year".
-    CRITICAL — capture EVERY award cap / tier mentioned for the program. A single
-    program often has multiple caps for different use cases:
-      • Equipment tiers, e.g. "$40 (SEER 16) / $550 (SEER 17+)"
-      • Use-case tiers, e.g. "Up to $150,000 (repair); Up to $350,000 (reconstruction);
-        Up to $50,000 (reimbursement, $10,000 min)"
-      • Property tiers, e.g. "$1,000 single-family; $600 multifamily"
-    Concatenate all tiers into ONE field separated by "; ". DO NOT pick only the
-    first or smallest dollar figure. Scan the entire content for additional caps
-    before finalising this field — they may appear in separate paragraphs, bullet
-    lists, accordions, or FAQ sections.
-11. valid_until: expiry date if stated. Null if not mentioned.
-12. updated_at: date the program information was LAST UPDATED as shown on the page
-    (e.g. "Last updated: March 2024"). Convert to YYYY-MM-DD if possible.
-    Return null if no update date is visible on the page — do NOT use today's date.
-13. program_links: direct URL to apply or learn more. Use the source URL if no specific link is given.
-14. Each program is a separate entry — do not merge multiple programs into one.
-15. If the page has no incentive programs, return an empty incentives list.
+1. program_name: exact official title. If a program has multiple distinct
+   award pathways (separate application tracks, each with its own cap and
+   eligibility), emit ONE record per pathway named "<Parent> — <Pathway>"
+   (e.g. "HRRP — Storm Damage Repair").
+2. state: "Florida" for FL programs, null if unclear.
+3. city: "Tampa" for city-only, "Hillsborough County" for county-wide,
+   null for statewide/federal.
+4. zip_code: only if listed verbatim on the page. NEVER derive from city
+   or county names.
+5. incentive_type: exactly one of:
+     • Grants — upfront money not repaid
+     • Rebates — cash back after purchase
+     • Finance Solutions — pay over time (loans, PACE)
+     • Tax Credits — reduce taxes owed
+     • Investments — large-scale equity or bond funding
+   Null if none apply.
+6. property_type: source's wording (e.g. "Residential", "Commercial").
+   Never use vague terms like "Other", "N/A", "Unknown" — use null instead.
+7. description: full summary of what THIS pathway offers — scope, what it
+   funds, and any exclusions ("not eligible: X") stated on the page. For
+   split records, describe the pathway specifically, not the parent program
+   in general.
+8. eligibility_criteria: ALL eligibility statements — both inclusions and
+   exclusions, damage/income thresholds, minimums, compliance rules. Capture
+   every condition stated for THIS pathway. Do not summarise away.
+   Both 7 and 8 must be plain narrative — NEVER include URLs or phrases
+   like "visit", "apply at", "click here". The dashboard has its own apply
+   button; state facts, not navigation.
+9. incentive_amount: amount with ALL qualifiers — caps, percentages,
+   minimums, alternate formulas. Examples:
+     • "Up to $150,000 or 50% of pre-storm value"
+     • "Up to $50,000 ($10,000 minimum)"
+   Split vs. concatenate:
+     • Separate pathways → split into multiple records (per rule 1), each
+       with only its own amount.
+     • Tiers WITHIN one award (equipment specs, property-type variants) →
+       keep one record, concatenate with "; "
+       (e.g. "$40 (SEER 16); $550 (SEER 17+)").
+10. valid_until: expiry date if stated, else null.
+11. updated_at: page's last-updated date if shown, converted to YYYY-MM-DD.
+    NEVER use today's date — null if not shown.
+12. program_links: direct apply/info URL, or the source URL as fallback.
+
+Return an empty list if the page has no incentive programs.
 """
 
 MAX_CONTENT_CHARS = 8_000
