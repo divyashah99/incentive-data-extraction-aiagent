@@ -28,12 +28,15 @@ DSIRE_TYPE_MAP: dict[str, str] = {
     "Personal Tax Exemption":           "Tax Credits",
     "Corporate Tax Deduction":          "Tax Credits",
     "Personal Tax Deduction":           "Tax Credits",
+    "Corporate Depreciation":           "Tax Credits",
     "Property Tax Exemption":           "Tax Credits",
     "Property Tax Incentive":           "Tax Credits",
     "Property Tax Assessment":          "Tax Credits",
     "Sales Tax Exemption":              "Tax Credits",
+    "Sales Tax Incentive":              "Tax Credits",
     "Value-Added Tax Exemption":        "Tax Credits",
     "Grant Program":                    "Grants",
+    "Green Building Incentive":         "Grants",
     "Industry Recruitment/Support":     "Grants",
     "Generation Incentive Program":     "Grants",
     "Loan Program":                     "Finance Solutions",
@@ -44,6 +47,26 @@ DSIRE_TYPE_MAP: dict[str, str] = {
     "Production Incentive":             "Finance Solutions",
     "Bond Program":                     "Investments",
     "Revolving Loan Fund":              "Investments",
+}
+
+# DSIRE returns regulations / standards / policies under typeObj.name as well.
+# These are NOT incentives per spec §3.1 (programs that help property owners
+# with clean energy or small-scale disaster/resilience) — they are technical
+# standards or grid-interconnection rules. Route them to quarantine.csv with
+# an explicit "out of scope" reason so reviewers see what was filtered.
+DSIRE_NON_INCENTIVE_TYPES: set[str] = {
+    "Building Energy Code",
+    "Energy Standards for Public Buildings",
+    "Appliance/Equipment Efficiency Standards",
+    "Renewables Portfolio Standard",
+    "Energy Efficiency Resource Standard",
+    "Net Metering",
+    "Interconnection",
+    "Solar/Wind Permitting Standards",
+    "Solar/Wind Access Policy",
+    "Solar/Wind Contractor Licensing",
+    "Equipment Certification",
+    "Generation Disclosure",
 }
 
 DSIRE_SECTOR_MAP: dict[str, str] = {
@@ -137,7 +160,8 @@ def _parse_dsire_program(prog: dict) -> dict:
     param_sets = prog.get("parameterSets", [])
     details    = prog.get("details", [])
 
-    incentive_type   = DSIRE_TYPE_MAP.get(prog.get("typeObj", {}).get("name", ""))
+    raw_type_name    = prog.get("typeObj", {}).get("name", "") or ""
+    incentive_type   = DSIRE_TYPE_MAP.get(raw_type_name)
     property_type    = _map_dsire_property_type(param_sets)
     description      = _strip_html(prog.get("summary", ""))[:600] or None
     eligibility      = _dsire_eligibility(details, param_sets)
@@ -146,12 +170,19 @@ def _parse_dsire_program(prog: dict) -> dict:
     if valid_until == "":
         valid_until = None
 
+    reasons: list[str] = []
+    if raw_type_name in DSIRE_NON_INCENTIVE_TYPES:
+        reasons.append(f"out of scope: {raw_type_name}")
+    elif raw_type_name and incentive_type is None:
+        reasons.append(f"unmapped DSIRE type: {raw_type_name}")
+
     return {
         "program_name":         prog.get("name"),
         "state":                state,
         "city":                 None,
         "zip_code":             None,   # DSIRE programs are statewide; no ZIP scoping
         "incentive_type":       incentive_type,
+        "service_category":     None,   # spec §4.4 — populated later when source names categories
         "property_type":        property_type,
         "description":          description,
         "eligibility_criteria": eligibility,
@@ -160,6 +191,7 @@ def _parse_dsire_program(prog: dict) -> dict:
         "updated_at":           prog.get("lastUpdated") or prog.get("updatedTs") or None,
         "program_links":        prog.get("websiteUrl") or
                                 f"https://programs.dsireusa.org/system/program/detail/{prog.get('id')}",
+        "_quarantine_reasons":  reasons,
     }
 
 

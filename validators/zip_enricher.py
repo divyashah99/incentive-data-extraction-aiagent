@@ -5,7 +5,7 @@ Most program pages don't list ZIP codes explicitly — they just say "Tampa
 residents" or "Hillsborough County homeowners". The LLM correctly returns
 zip_code=None for those (we instruct it not to fabricate). This enricher
 fills the gap by mapping the program's city/county scope to the actual ZIPs
-that fall within it, using curated lookup tables.
+that fall within it, using the maintained crosswalk CSV (spec §5.4).
 
 Rules:
   • zip_code already set       → leave unchanged (LLM-extracted verbatim wins)
@@ -16,42 +16,43 @@ Rules:
 This runs AFTER amount validation and BEFORE Pydantic schema validation,
 so the dicts can still be mutated.
 """
+from __future__ import annotations
+
+import csv
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ── ZIP lookup tables ─────────────────────────────────────────────────────────
-# Source: USPS ZIP code service area data for Hillsborough County, FL (2025).
-# Excludes PO-box-only and unique-recipient ZIPs (e.g. 33601, 33608, 33622)
-# since those aren't useful for resident eligibility matching.
+# ── Load ZIPs from the maintained crosswalk CSV (spec §5.4) ───────────────────
+# The CSV lives in geo/ alongside the pipeline. Keeping ZIPs in a data file
+# (not Python code) means the data team can extend coverage without a code
+# change when M2 / M3 milestones open new counties.
 
-TAMPA_CITY_ZIPS: list[str] = [
-    "33602", "33603", "33604", "33605", "33606", "33607", "33609",
-    "33610", "33611", "33612", "33613", "33614", "33615", "33616",
-    "33617", "33618", "33619", "33620", "33621", "33624", "33625",
-    "33626", "33629", "33634", "33635", "33637", "33647",
-]
+_CROSSWALK_PATH = Path(__file__).resolve().parent.parent / "geo" / "geo_crosswalk_tampa_hillsborough.csv"
 
-# Hillsborough County = Tampa city + surrounding unincorporated areas
-# (Brandon, Riverview, Plant City, Sun City Center, Valrico, Lutz, etc.)
-_HILLSBOROUGH_NON_TAMPA = [
-    # Brandon area
-    "33508", "33509", "33510", "33511",
-    # Riverview, Apollo Beach
-    "33569", "33572", "33578", "33579",
-    # Plant City
-    "33563", "33564", "33565", "33566", "33567",
-    # Sun City Center / Ruskin / Wimauma
-    "33570", "33573", "33586", "33598",
-    # Valrico, Lithia, Dover
-    "33527", "33547", "33594", "33596",
-    # Lutz, Odessa, Cheval (part)
-    "33548", "33549", "33556", "33558", "33559",
-    # Seffner, Thonotosassa, Mango, Gibsonton
-    "33530", "33534", "33550", "33584", "33592",
-]
 
-HILLSBOROUGH_COUNTY_ZIPS: list[str] = sorted(set(TAMPA_CITY_ZIPS + _HILLSBOROUGH_NON_TAMPA))
+def _load_crosswalk(path: Path) -> tuple[list[str], list[str]]:
+    """Return (tampa_zips, hillsborough_county_zips) from the crosswalk CSV."""
+    if not path.exists():
+        logger.warning("Geo crosswalk not found at %s — ZIP enrichment disabled", path)
+        return [], []
+
+    tampa: list[str] = []
+    county: set[str] = set()
+    with path.open("r", encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            zip_code = (row.get("zip") or "").strip()
+            city = (row.get("city") or "").strip()
+            if not zip_code:
+                continue
+            if city.lower() == "tampa":
+                tampa.append(zip_code)
+            county.add(zip_code)
+    return tampa, sorted(county)
+
+
+TAMPA_CITY_ZIPS, HILLSBOROUGH_COUNTY_ZIPS = _load_crosswalk(_CROSSWALK_PATH)
 
 
 # ── Enricher ──────────────────────────────────────────────────────────────────
@@ -76,14 +77,14 @@ def enrich_zip_codes(records: list[dict]) -> list[dict]:
         if not city:
             continue   # statewide / federal / unknown — leave null
 
-        if city == "tampa":
+        if city == "tampa" and TAMPA_CITY_ZIPS:
             r["zip_code"] = ", ".join(TAMPA_CITY_ZIPS)
             enriched_count += 1
-        elif city in ("hillsborough county", "hillsborough"):
+        elif city in ("hillsborough county", "hillsborough") and HILLSBOROUGH_COUNTY_ZIPS:
             r["zip_code"] = ", ".join(HILLSBOROUGH_COUNTY_ZIPS)
             enriched_count += 1
         # else: city is set but isn't Tampa/Hillsborough — leave null
-        #       (we don't have lookup tables for other cities)
+        #       (we don't have lookup tables for other cities yet — spec §8 milestones)
 
     if enriched_count:
         logger.info("ZIP enricher populated %d record(s) from city/county scope", enriched_count)
@@ -96,3 +97,15 @@ def enrichment_summary() -> dict:
         "tampa_zips": len(TAMPA_CITY_ZIPS),
         "hillsborough_zips": len(HILLSBOROUGH_COUNTY_ZIPS),
     }
+
+
+def load_crosswalk_rows(path: Path | str | None = None) -> list[dict]:
+    """
+    Public loader for the program_geo expansion step (spec §5.3).
+    Returns the raw rows from the crosswalk: [{city, zip, county}, ...].
+    """
+    p = Path(path) if path else _CROSSWALK_PATH
+    if not p.exists():
+        return []
+    with p.open("r", encoding="utf-8-sig", newline="") as fh:
+        return [dict(row) for row in csv.DictReader(fh)]

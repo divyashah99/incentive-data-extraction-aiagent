@@ -1,6 +1,9 @@
 """
-Discoverer — loads sources.yaml, filters by enabled/priority, and returns
+Discoverer — loads sources.yaml, filters by status (spec §9.5), and returns
 the correct scraper instance for each source.
+
+Spec §9.5: the registry is an open set sorted by operational needs (stale
+fetch, quarantine rate), not a static priority ranking. There is no P0/P1/P2.
 """
 import logging
 from pathlib import Path
@@ -15,8 +18,6 @@ from scrapers.pdf_scraper import PdfScraper
 
 logger = logging.getLogger(__name__)
 
-_PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
-
 
 class Discoverer:
 
@@ -26,13 +27,13 @@ class Discoverer:
 
     def load_sources(
         self,
-        priority_filter: str | None = None,
         source_filter: str | None = None,
         group_filter: str | None = None,
     ) -> list[dict]:
         """
-        Load and filter sources from YAML.
-        Returns ordered list: P0 first, P1 second, P2 last.
+        Load sources from YAML, keeping only ``status: active`` entries
+        unless ``source_filter`` explicitly names one (so candidate / deprecated
+        sources can still be tested by id).
         """
         if not self._config_path.exists():
             raise FileNotFoundError(f"sources.yaml not found at {self._config_path.resolve()}")
@@ -42,19 +43,16 @@ class Discoverer:
 
         all_sources: list[dict] = self._config.get("sources", [])
 
-        # Filter enabled
-        sources = [s for s in all_sources if s.get("enabled", True)]
-
-        # Optional filters
-        if priority_filter:
-            sources = [s for s in sources if s.get("priority") == priority_filter]
         if source_filter:
-            sources = [s for s in sources if s.get("id") == source_filter]
-        if group_filter:
-            sources = [s for s in sources if s.get("sheet_group", "").lower() == group_filter.lower()]
-
-        # Sort by priority
-        sources.sort(key=lambda s: _PRIORITY_ORDER.get(s.get("priority", "P2"), 99))
+            # Allow testing any source by id regardless of status
+            sources = [s for s in all_sources if s.get("id") == source_filter]
+        else:
+            sources = [s for s in all_sources if s.get("status", "active") == "active"]
+            if group_filter:
+                sources = [
+                    s for s in sources
+                    if s.get("sheet_group", "").lower() == group_filter.lower()
+                ]
 
         logger.info("Loaded %d sources from %s", len(sources), self._config_path)
         return sources

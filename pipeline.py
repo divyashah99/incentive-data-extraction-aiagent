@@ -4,11 +4,10 @@ Tampa Incentive Data Extraction Pipeline
 Main entry point. Orchestrates: Discover → Scrape → Parse (LLM) → Validate → CSV output.
 
 Usage:
-    python pipeline.py                           # Run all enabled sources
-    python pipeline.py --priority P0             # Run P0 sources only
+    python pipeline.py                           # Run all active sources
     python pipeline.py --source teco_rebates     # Run a single source by ID
-    python pipeline.py --dry-run                 # Parse but don't write CSV
-    python pipeline.py --priority P0 --dry-run   # Quick test without output
+    python pipeline.py --group "Tampa Electric (TECO)"   # Run a sheet group
+    python pipeline.py --dry-run                 # Parse but don't write output
 """
 import argparse
 import logging
@@ -57,13 +56,12 @@ class PipelineStats:
     sources_failed: int = 0
     records_extracted: int = 0
     records_validated: int = 0
-    records_flagged_review: int = 0
+    records_quarantined: int = 0
     validation_failures: int = 0
     errors: list[str] = field(default_factory=list)
 
 
 def run_pipeline(
-    priority_filter: str | None = None,
     source_filter: str | None = None,
     group_filter: str | None = None,
     dry_run: bool = False,
@@ -76,7 +74,6 @@ def run_pipeline(
     # ── Step 1: Load sources ──────────────────────────────────────────────────
     discoverer = Discoverer()
     sources = discoverer.load_sources(
-        priority_filter=priority_filter,
         source_filter=source_filter,
         group_filter=group_filter,
     )
@@ -100,8 +97,8 @@ def run_pipeline(
     for i, source in enumerate(sources, start=1):
         source_id = source.get("id", f"source_{i}")
         source_name = source.get("name", source_id)
-        priority = source.get("priority", "?")
-        logger.info("[%d/%d] Processing [%s] %s", i, len(sources), priority, source_name)
+        status = source.get("status", "active")
+        logger.info("[%d/%d] Processing [%s] %s", i, len(sources), status, source_name)
 
         stats.sources_attempted += 1
 
@@ -172,9 +169,10 @@ def run_pipeline(
 
         # 3d. Pydantic schema validation
         validated, failed = validate_batch(raw_records, source_id=source_id)
+        quarantined_here = sum(1 for r in validated if r.is_quarantined)
         stats.records_validated += len(validated)
         stats.validation_failures += failed
-        stats.records_flagged_review += sum(1 for r in validated if r.review_needed == "Yes")
+        stats.records_quarantined += quarantined_here
         all_records.extend(validated)
         # Track records by sheet group for Excel output.
         # Sources can opt into grouping by setting `sheet_group:` in sources.yaml
@@ -184,10 +182,10 @@ def run_pipeline(
         records_by_source.setdefault(sheet_key, []).extend(validated)
 
         logger.info(
-            "  -> %d extracted, %d validated (%d need review)",
+            "  -> %d extracted, %d validated (%d quarantined)",
             len(raw_records),
             len(validated),
-            sum(1 for r in validated if r.review_needed == "Yes"),
+            quarantined_here,
         )
 
         # Polite delay between sources
@@ -198,11 +196,23 @@ def run_pipeline(
     # ── Step 4: Deduplicate ───────────────────────────────────────────────────
     deduped = writer.deduplicate(all_records)
 
-    # ── Step 5: Write CSV + multi-sheet XLSX ──────────────────────────────────
+    # ── Step 5: Split clean vs quarantined and write the handoff package ──────
+    # Spec §6.4 Phase 0 handoff:
+    #   • incentive_programs.csv  → clean Layer 1 rows
+    #   • quarantine.csv          → failed/out-of-scope rows + reason
+    #   • program_geo.csv         → Layer 2 search index built from clean rows
+    clean    = [r for r in deduped if not r.is_quarantined]
+    flagged  = [r for r in deduped if r.is_quarantined]
+
     if dry_run:
-        logger.info("Dry run — skipping output write (%d records would be written)", len(deduped))
+        logger.info(
+            "Dry run — would write %d clean, %d quarantined, plus program_geo",
+            len(clean), len(flagged),
+        )
     else:
-        writer.write(deduped)
+        writer.write(clean)
+        writer.write_quarantine(flagged)
+        writer.write_program_geo(clean)
         writer.write_xlsx(records_by_source=records_by_source, combined=deduped)
 
     return stats
@@ -217,13 +227,15 @@ def _print_summary(stats: PipelineStats, dry_run: bool) -> None:
         print(f"  Sources failed    : {stats.sources_failed}")
     print(f"  Records extracted : {stats.records_extracted}")
     print(f"  Records validated : {stats.records_validated}")
-    print(f"  Need review       : {stats.records_flagged_review}")
+    print(f"  Quarantined       : {stats.records_quarantined}")
     if stats.validation_failures:
         print(f"  Parse failures    : {stats.validation_failures}")
     if dry_run:
         print("  Output            : (dry run — no file written)")
     else:
-        print("  Output (CSV)      : output/extracted_tampa_incentives.csv")
+        print("  Output (Layer 1)  : output/extracted_tampa_incentives.csv")
+        print("  Output (quarant.) : output/quarantine.csv")
+        print("  Output (Layer 2)  : output/program_geo.csv")
         print("  Output (XLSX)     : output/extracted_tampa_incentives.xlsx")
         print("                      (multi-sheet: All Records + one per source group)")
     if stats.errors:
@@ -241,10 +253,9 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    arg_parser.add_argument("--priority", choices=["P0", "P1", "P2"], help="Run only this priority tier")
     arg_parser.add_argument("--source", type=str, help="Run only this source ID (e.g. teco_rebates)")
     arg_parser.add_argument("--group", type=str, help="Run only sources in this sheet group (e.g. 'Hillsborough County')")
-    arg_parser.add_argument("--dry-run", action="store_true", help="Fetch and parse but do not write output CSV")
+    arg_parser.add_argument("--dry-run", action="store_true", help="Fetch and parse but do not write output files")
     arg_parser.add_argument(
         "--output",
         type=str,
@@ -254,7 +265,6 @@ if __name__ == "__main__":
     args = arg_parser.parse_args()
 
     stats = run_pipeline(
-        priority_filter=args.priority,
         source_filter=args.source,
         group_filter=args.group,
         dry_run=args.dry_run,

@@ -81,7 +81,7 @@ Each source has a **priority tier** (P0 / P1 / P2), a **scraper type** (static H
   │                                                      │
   │  AmountValidator          SchemaValidator            │
   │  (normalise + sanity)     (Pydantic v2 model)       │
-  │  rule-based               sets review_needed         │
+  │  rule-based               appends quarantine reasons │
   └────────────────────────┬────────────────────────────┘
                            |
                     list[IncentiveRecord]
@@ -91,14 +91,15 @@ Each source has a **priority tier** (P0 / P1 / P2), a **scraper type** (static H
   │                   OUTPUT LAYER                       │
   │                                                      │
   │  OutputWriter                                        │
-  │  deduplicate() -> write CSV + write_xlsx()          │
+  │  split clean/quarantined →                           │
+  │    write() + write_quarantine() +                    │
+  │    write_program_geo() + write_xlsx()                │
   └─────────────────────────────────────────────────────┘
-         |                          |
-         v                          v
-  output/extracted_         output/extracted_
-  tampa_incentives.csv      tampa_incentives.xlsx
-                            (All Records + 1 sheet
-                             per source)
+         |              |              |          |
+         v              v              v          v
+  extracted_      quarantine.csv  program_geo  extracted_
+  tampa_inc.csv   (reasons)       .csv         tampa_inc.xlsx
+  (Layer 1)                       (Layer 2)    (review aid)
 ```
 
 ---
@@ -109,7 +110,10 @@ Each source has a **priority tier** (P0 / P1 / P2), a **scraper type** (static H
 incentive-data-extraction-aiagent/
 │
 ├── config/
-│   └── sources.yaml          # All scraping targets — URL, type, priority, extraction method
+│   └── sources.yaml          # Source registry (spec §9.5 fields: status, scope, scrape_notes …)
+│
+├── geo/
+│   └── geo_crosswalk_tampa_hillsborough.csv   # city ↔ zip ↔ county (spec §5.4)
 │
 ├── scrapers/
 │   ├── base_scraper.py       # RawContent dataclass + rate-limiting BaseScraper ABC
@@ -123,12 +127,15 @@ incentive-data-extraction-aiagent/
 │   └── table_parser.py       # BeautifulSoup HTML table extractor (no LLM)
 │
 ├── validators/
-│   ├── schema_validator.py   # Pydantic v2 model + review_needed logic
-│   └── amount_validator.py   # Rule-based amount normalisation & sanity checks
+│   ├── schema_validator.py   # Pydantic v2 model + quarantine reasons
+│   ├── type_normalizer.py    # Canonical incentive_type values + alias map
+│   ├── amount_validator.py   # Rule-based amount normalisation & sanity checks
+│   ├── text_sanitizer.py     # Strip URLs from narrative fields
+│   └── zip_enricher.py       # City/county → ZIPs from crosswalk
 │
 ├── agents/
-│   ├── discoverer.py         # Reads sources.yaml, scraper factory
-│   └── output_writer.py      # CSV + multi-sheet Excel writer + deduplication
+│   ├── discoverer.py         # Reads sources.yaml (status filter), scraper factory
+│   └── output_writer.py      # Layer 1 CSV + quarantine.csv + program_geo.csv + XLSX
 │
 ├── pipeline.py               # Main entry point (CLI)
 ├── requirements.txt
@@ -136,7 +143,7 @@ incentive-data-extraction-aiagent/
 ├── .env.example              # Template
 ├── .gitignore
 ├── logs/                     # Created at runtime — pipeline.log
-└── output/                   # Created at runtime — CSV and XLSX
+└── output/                   # Created at runtime — handoff package CSVs + XLSX
 ```
 
 ---
@@ -255,21 +262,23 @@ Pure rule-based, no LLM. Runs **before** Pydantic for speed:
    - Percentage > 100%
    - No numeric value found at all
 
-Flagged records have `review_needed` set to `"Yes"` in the raw dict before Pydantic validation runs.
+Flagged records get a quarantine reason appended (e.g. `amount: > $10M`) which is carried alongside the record through Pydantic into `quarantine.csv`.
 
 #### Schema Validator (`validators/schema_validator.py`)
 
-Pydantic v2 `BaseModel` with a `@model_validator` that sets `review_needed = "Yes"` if any of the following are true:
+Pydantic v2 `BaseModel` whose `@model_validator` appends a quarantine reason for any of the following:
 
-| Condition | Flag reason |
+| Condition | Reason text |
 |---|---|
 | `program_name` is null or empty | `missing program_name` |
-| `incentive_type` not in the 5 valid types | `missing or invalid incentive_type` |
+| `incentive_type` not in the 5 valid types | `unmapped incentive_type: '<raw>'` |
 | `description` is null or < 10 characters | `missing or too-short description` |
 | `incentive_amount` is null | `missing incentive_amount` |
 | `state` is set but not Florida/FL/Federal | `unexpected state: <value>` |
 
-**Records are never dropped.** Every record reaches the output, whether clean (`review_needed=No`) or flagged (`review_needed=Yes`). Optional fields (`city`, `property_type`, `eligibility_criteria`, `valid_until`, `updated_at`) do not trigger flags on their own — they are legitimately absent for many programs.
+**Records are never silently dropped.** Clean rows land in the main CSV; quarantined rows land in `quarantine.csv` with their reasons. Optional fields (`city`, `service_category`, `property_type`, `eligibility_criteria`, `valid_until`, `updated_at`) do not trigger quarantine on their own — they are legitimately absent for many programs.
+
+Upstream stages (`scrapers/api_scraper.py`, `validators/amount_validator.py`) attach reasons via a `_quarantine_reasons` list on the raw dict; the schema validator merges those onto the model so any single record carries the union of every reason it accumulated.
 
 The 5 valid incentive types (case-insensitive normalisation applied):
 
@@ -287,98 +296,91 @@ The 5 valid incentive types (case-insensitive normalisation applied):
 
 #### Deduplication
 
-Before writing, `OutputWriter.deduplicate()` removes duplicate records keyed on `(program_name, incentive_type)` (case-insensitive). When duplicates exist — for example, DSIRE and a utility site both list the same program — the record with `review_needed=No` is kept.
+Before writing, `OutputWriter.deduplicate()` removes duplicate records keyed on `(program_name, incentive_type)` (case-insensitive). When duplicates exist — for example, DSIRE and a utility site both list the same program — the record with no quarantine reasons is kept.
 
-#### CSV Output
+#### Handoff package (spec §6.4)
 
-Written with UTF-8 BOM encoding (`utf-8-sig`) so Excel opens it correctly without an import wizard. Column order matches the spec exactly:
+All three files are written UTF-8 BOM (`utf-8-sig`) so Excel opens them without an import wizard.
 
-```
-program_name, state, city, incentive_type, property_type, description,
-eligibility_criteria, incentive_amount, valid_until, updated_at,
-review_needed, program_links
-```
+| File | Contents |
+|---|---|
+| `extracted_tampa_incentives.csv` | Clean Layer 1 rows, exactly the 13 spec §4 columns in spec order. |
+| `quarantine.csv` | Quarantined rows: 13 spec columns + `quarantine_reason`. |
+| `program_geo.csv` | Layer 2 (spec §5.2): `program_id, geo_type, geo_value`. Built from clean rows only, after validation. |
 
 #### Excel Output (multi-sheet)
 
-The XLSX workbook contains:
-- **Sheet 1 — "All Records"**: all deduplicated records combined
-- **Sheets 2–N**: one sheet per source ID (sorted alphabetically), showing only that source's records before deduplication
+The XLSX workbook is for human review and merges clean + quarantined into one sheet per source plus an "All Records" sheet. Quarantined rows are highlighted yellow and the `quarantine_reason` column makes the reason visible at a glance.
 
-Formatting features:
+Formatting:
 - Dark blue bold header row
-- Soft yellow highlight for rows where `review_needed = Yes`
-- Frozen top row (header stays visible while scrolling)
-- Pre-set column widths (e.g. `description` = 60, `program_name` = 40)
-- Word-wrapped text cells
+- Soft yellow fill for quarantined rows
+- Frozen top row
+- Pre-set column widths and word-wrapped cells
 
 ---
 
 ## Data Sources
 
-### Priority P0 — Highest (run first, most reliable)
+Spec §9 treats the registry as an open set — coverage grows over time, not via a fixed "done list". The authoritative list of sources is `config/sources.yaml`; this README does not duplicate it. To see what runs today:
 
-| Source ID | Name | Type | Extraction |
-|---|---|---|---|
-| `dsire_florida` | DSIRE Florida Database | API (paginated JSON) | direct |
-| `teco_ductwork` | TECO Rebate — Ductwork | static_html | llm |
-| `teco_ceiling_insulation` | TECO Rebate — Ceiling Insulation | static_html | llm |
-| `teco_heating_cooling` | TECO Rebate — Heating & Cooling | static_html | llm |
-| `teco_new_construction` | TECO Rebate — Energy Star New Construction | static_html | llm |
-| `teco_smart_thermostat` | TECO Rebate — Smart Thermostat | static_html | llm |
-| `teco_weatherization` | TECO Rebate — Weatherization | static_html | llm |
-| `irs_home_energy_hub` | IRS Home Energy Tax Credits Hub | static_html | llm |
-| `irs_energy_credits` | IRS Energy Efficient Home Improvement (25C) | static_html | llm |
-| `irs_residential_clean_energy` | IRS Residential Clean Energy Credit (25D) | static_html | llm |
+```bash
+python -c "import yaml; d=yaml.safe_load(open('config/sources.yaml','r',encoding='utf-8')); [print(f\"{s['status']:11} {s['id']:36} {s.get('scope','-'):8} {s['name']}\") for s in d['sources']]"
+```
 
-### Priority P1 — High
+A handful of category notes that are not obvious from the YAML:
 
-| Source ID | Name | Type | Extraction |
-|---|---|---|---|
-| `my_safe_florida` | My Safe Florida Home Program | static_html | llm |
-| `irs_obbba_legislation` | IRS One Big Beautiful Bill Act | static_html | llm |
-| `energystar_tax_credits` | ENERGY STAR Federal Tax Credits | static_html | llm |
-| `florida_housing_homebuyer` | Florida Housing — Homebuyer Programs | static_html | llm |
-| `florida_housing_ship` | Florida Housing — SHIP Program | static_html | llm |
-| `florida_housing_hometown_heroes` | Florida Hometown Heroes Housing | static_html | llm |
-| `hillsborough_housing` | Hillsborough County Housing (SHIP/CDBG/HOME) | static_html | llm |
-| `hillsborough_oor` | Hillsborough County OOR Rehab Program | static_html | llm |
-| `hillsborough_dpa` | Hillsborough County Down Payment Assistance | static_html | llm |
-| `duke_energy_florida` | Duke Energy Florida — Home Energy Rebates | js_rendered | llm |
-| `duke_energy_clean_energy` | Duke Energy Florida — Clean Energy Connection | js_rendered | llm |
-
-### Priority P2 — Standard
-
-| Source ID | Name | Type | Extraction |
-|---|---|---|---|
-| `tampa_community_dev` | City of Tampa — Housing Rehab (HRRP) | static_html | llm |
-| `fema_hazard_mitigation` | FEMA Hazard Mitigation Grant Program | static_html | llm |
-| `ygrene_pace` | Ygrene PACE Financing (Florida) | static_html | llm |
-| `florida_dept_energy` | FDACS Energy Division | js_rendered | llm |
-| `renewpace` | RenewPACE Florida | — | **disabled** |
-
-> **Note:** `renewpace` is disabled — CloudFront WAF blocks all programmatic clients including Playwright (datacenter IP detection). PACE financing is already covered by `ygrene_pace`.
+- **DSIRE (`dsire_florida`)** — paginated JSON API, direct field mapping (no LLM). Returns *all* Florida programs in the DSIRE index, including federal programs linked from Florida. Non-incentive types (Net Metering, Building Energy Code, RPS, etc.) are filtered to `quarantine.csv` per spec §3.1.
+- **TECO / Duke Energy** — utility rebate pages. Duke requires Playwright (Akamai WAF).
+- **IRS 25C / 25D** — federal residential tax credits.
+- **Florida Housing Finance Corp** — SHIP, Hometown Heroes, DPA programs.
+- **Hillsborough County** — SHIP/CDBG/HOME-administered local programs + HRRP disaster recovery (Power Pages site, Playwright-rendered with accordion expansion).
+- **My Safe Florida Home / FEMA / Ygrene** — disaster resilience and PACE financing.
+- **`renewpace`** — kept as `status: deprecated` (CloudFront WAF blocks Playwright); PACE financing already covered by `ygrene_pace`.
 
 ---
 
 ## Output Schema
 
-| Column | Description | Example |
-|---|---|---|
-| `program_name` | Official program name | `TECO Ductwork Rebate` |
-| `state` | State name | `Florida` |
-| `city` | `Tampa`, `Hillsborough County`, or null for statewide/federal | `Tampa` |
-| `incentive_type` | One of the 5 valid types | `Rebates` |
-| `property_type` | As stated in source | `Residential` |
-| `description` | 1–3 sentence summary | `Cash rebate for...` |
-| `eligibility_criteria` | Who qualifies | `Homeowners in TECO service area...` |
-| `incentive_amount` | Amount as stated in source | `$125 per unit` |
-| `valid_until` | Expiry date if stated (YYYY-MM-DD) | `2032-12-31` |
-| `updated_at` | Last updated date from the source page | `2024-03-01` |
-| `review_needed` | `Yes` if any validation rule fired | `No` |
-| `program_links` | Direct URL to apply or learn more | `https://...` |
+The pipeline produces three CSV files per run (spec v2.7 §6.4 Phase 0 handoff):
 
-`updated_at` is extracted verbatim from the source page (e.g. "Last updated: March 2024"). It is **never** set to today's scrape date — if no update date is visible on the page, the field is `null`.
+| File | Role |
+|---|---|
+| `output/extracted_tampa_incentives.csv` | **Layer 1** — clean rows in the spec §4 column order |
+| `output/quarantine.csv` | Failed / out-of-scope rows + `quarantine_reason` (replaces the old `review_needed` column) |
+| `output/program_geo.csv` | **Layer 2** — `program_id, geo_type, geo_value` search index (spec §5.2) |
+
+### Layer 1 columns (`extracted_tampa_incentives.csv`)
+
+| # | Column | Description | Example |
+|---|---|---|---|
+| 1 | `program_name` | Official program name | `TECO Ductwork Rebate` |
+| 2 | `state` | Full state name (`Florida`) or `All` for federal/nationwide | `Florida` |
+| 3 | `city` | `Tampa`, `Hillsborough County`, or null for statewide/federal | `Tampa` |
+| 4 | `zip_code` | ZIPs verbatim from source; semicolon-separated for multiple | `33602;33603` |
+| 5 | `incentive_type` | EXACTLY one of the 5 spec values (see §4.2) | `Rebates` |
+| 6 | `service_category` | Home-upgrade categories the program funds, as worded on source | `HVAC;Weatherization` |
+| 7 | `property_type` | As stated in source | `Residential` |
+| 8 | `description` | Plain-narrative summary of what the program funds | `Cash rebate for...` |
+| 9 | `eligibility_criteria` | Who qualifies — verbatim from the source | `Homeowners in TECO service area...` |
+| 10 | `incentive_amount` | Amount as stated in source | `$125 per unit` |
+| 11 | `valid_until` | Expiry date if stated, text OK (`Ongoing`, `Rolling`) | `2032-12-31` |
+| 12 | `updated_at` | Last-updated date from source page (never today's date) | `2024-03-01` |
+| 13 | `program_links` | Direct URL to apply or learn more | `https://...` |
+
+`updated_at` is extracted verbatim from the source page. It is **never** set to today's scrape date — if no update date is visible, the field is `null`.
+
+### Quarantine reasons (`quarantine.csv`)
+
+The 13 Layer 1 columns plus a trailing `quarantine_reason` column. Common reasons:
+
+| Reason | Source |
+|---|---|
+| `out of scope: <DSIRE type>` | DSIRE row whose `typeObj.name` is a regulation/code/standard (spec §3.1) |
+| `unmapped incentive_type: '<raw>'` | LLM or table returned a label outside the 5 spec values |
+| `missing incentive_amount` | No amount visible on the source page |
+| `missing or too-short description` | Source provided no usable summary |
+| `amount: <flag>` | Amount validator sanity check failed ($0, > $10M, > 100%, etc.) |
 
 ---
 
@@ -486,16 +488,10 @@ GROQ_API_KEY=your_groq_key_here
 
 ## Running the Pipeline
 
-### Full run (all enabled sources)
+### Full run (all active sources)
 
 ```bash
 python pipeline.py
-```
-
-### P0 sources only (fastest, most reliable — good for testing)
-
-```bash
-python pipeline.py --priority P0
 ```
 
 ### Single source
@@ -505,11 +501,18 @@ python pipeline.py --source teco_ductwork
 python pipeline.py --source dsire_florida
 ```
 
+`--source` bypasses the status filter, so `candidate` and `deprecated` sources can still be exercised by id when iterating on a new domain.
+
+### Source group
+
+```bash
+python pipeline.py --group "Tampa Electric (TECO)"
+```
+
 ### Dry run (fetch + parse, no output files written)
 
 ```bash
 python pipeline.py --dry-run
-python pipeline.py --priority P0 --dry-run
 ```
 
 ### Custom output path
@@ -524,12 +527,12 @@ After a successful run:
 
 ```
 output/
-├── extracted_tampa_incentives.csv   # All records, UTF-8 BOM, Excel-ready
-└── extracted_tampa_incentives.xlsx  # Multi-sheet workbook
-    ├── All Records                  # Combined deduplicated
-    ├── dsire_florida                # DSIRE records only
-    ├── teco_ductwork                # TECO ductwork only
-    └── ...                         # One sheet per source
+├── extracted_tampa_incentives.csv   # Layer 1, clean rows only (spec §4)
+├── quarantine.csv                   # Failed/out-of-scope rows + reason
+├── program_geo.csv                  # Layer 2 search index (spec §5.2)
+└── extracted_tampa_incentives.xlsx  # Multi-sheet workbook for review
+    ├── All Records                  # Combined (clean + quarantined, yellow = quarantined)
+    └── ...                          # One sheet per source / sheet_group
 ```
 
 Logs are written to `logs/pipeline.log` and also printed to stdout.
@@ -540,12 +543,14 @@ Logs are written to `logs/pipeline.log` and also printed to stdout.
 =======================================================
   PIPELINE SUMMARY
 =======================================================
-  Sources processed : 24/25
+  Sources processed : 25/26
   Sources failed    : 1
-  Records extracted : 87
-  Records validated : 87
-  Need review       : 12
-  Output (CSV)      : output/extracted_tampa_incentives.csv
+  Records extracted : 141
+  Records validated : 141
+  Quarantined       : 28
+  Output (Layer 1)  : output/extracted_tampa_incentives.csv
+  Output (quarant.) : output/quarantine.csv
+  Output (Layer 2)  : output/program_geo.csv
   Output (XLSX)     : output/extracted_tampa_incentives.xlsx
 =======================================================
 ```
@@ -554,16 +559,24 @@ Logs are written to `logs/pipeline.log` and also printed to stdout.
 
 ## Configuration Reference
 
-### `config/sources.yaml` fields
+### `config/sources.yaml` fields (spec v2.7 §9.5)
+
+The registry is an **open set** sorted by operational needs, not a static priority ranking. There is no `priority` / `P0` field — sources are gated by `status:` only.
 
 | Field | Required | Description |
 |---|---|---|
 | `id` | yes | Unique snake_case identifier |
 | `name` | yes | Human-readable display name |
-| `priority` | yes | `P0`, `P1`, or `P2` |
-| `type` | yes | `static_html`, `js_rendered`, or `api` |
+| `status` | yes | `active` (runs), `candidate` (under evaluation, skipped unless `--source` names it), `deprecated` (skipped, kept for audit) |
+| `type` | yes | `static_html`, `js_rendered`, `api`, or `pdf` |
 | `extraction_method` | yes | `direct`, `table`, or `llm` |
-| `enabled` | yes | `true` / `false` |
+| `scope` | yes | `energy`, `disaster`, or `both` (spec §3.1) |
+| `format` | yes | `html`, `pdf`, `table`, or `mixed` |
+| `refresh_cadence` | yes | How often the source is rechecked (`weekly`, `monthly`, …) |
+| `discovered_at` | yes | ISO date the source was added |
+| `discovered_by` | yes | `human`, `pipeline`, or `agent` |
+| `owner` | yes | Team or individual responsible |
+| `scrape_notes` | yes | Free-text notes on auth, quirks, brittleness, what the LLM needs to know |
 | `url` | for HTML/JS | Target page URL |
 | `base_url` | for API | API base endpoint |
 | `api_params` | for API | Query params dict |
@@ -571,7 +584,61 @@ Logs are written to `logs/pipeline.log` and also printed to stdout.
 | `js_wait_selector` | JS only | CSS selector to wait for before extracting |
 | `js_wait_seconds` | JS only | Extra settle time in seconds (default: 0) |
 | `js_wait_until` | JS only | Playwright wait event override (default: `domcontentloaded`) |
-| `notes` | no | Developer notes (not used at runtime) |
+| `js_expand_accordions` | JS only | Expand collapsed `<details>` / Bootstrap accordions before extract |
+| `sheet_group` | no | XLSX sheet grouping for related sources |
+
+### Adding a New Source
+
+The registry is open by design (spec §9). To add a new source:
+
+**1. Append an entry to `config/sources.yaml`** with `status: candidate`:
+
+```yaml
+  - id: my_new_source
+    name: "City of Foo — Energy Rebate Program"
+    status: candidate                  # promote to `active` once rows look right
+    type: static_html                  # or js_rendered / api / pdf
+    extraction_method: llm             # or direct / table
+    scope: energy                      # or disaster / both
+    format: html                       # or pdf / table / mixed
+    refresh_cadence: weekly
+    discovered_at: 2026-06-03
+    discovered_by: human
+    owner: scraper-team
+    url: "https://example.gov/rebates"
+    rate_limit_seconds: 1.0
+    scrape_notes: >
+      What you learned while reading the page — auth requirements, layout
+      quirks, dates/amounts to double-check, anything brittle.
+```
+
+**2. Test with just this source**:
+
+```bash
+python pipeline.py --source my_new_source
+```
+
+The `--source` flag overrides the status filter, so candidate sources can still be exercised by id. Inspect:
+
+- `output/extracted_tampa_incentives.csv` — did clean rows come through?
+- `output/quarantine.csv` — what got flagged, and why?
+- `output/extracted_tampa_incentives.xlsx` — yellow-highlighted rows = quarantined.
+
+**3. Promote when satisfied** by changing `status: candidate` → `status: active`.
+
+**4. Full rerun**:
+
+```bash
+python pipeline.py
+```
+
+This regenerates all three handoff artifacts (Layer 1 CSV, `quarantine.csv`, `program_geo.csv`) using every active source.
+
+**No code changes** are needed for new sources of `type: static_html | js_rendered | api | pdf`. Only domain-specific quirks (custom auth, unusual JSON shapes, anti-bot measures) require touching the matching scraper in `scrapers/`.
+
+### Deprecating a Source
+
+Set `status: deprecated` and add a `scrape_notes` line explaining why (anti-bot, dead domain, duplicate, etc.). Deprecated sources stay in the YAML for audit — never delete entries.
 
 ### `.env` variables
 
@@ -617,10 +684,11 @@ Many sites do not show a "last updated" date. In those cases `updated_at` is `nu
 ### DSIRE data scope
 The DSIRE API returns **all Florida state programs**, not just Tampa-specific ones. City/county scoping for DSIRE records is done at the LLM extraction stage for HTML sources; for DSIRE direct-mapped records, `city` is always `null` (the API doesn't expose city-level data).
 
-### `review_needed = Yes` does not mean invalid
-Records flagged for review are still written to the output. Common reasons include:
-- Incentive programs that have no fixed dollar amount (e.g. "contact your utility for details")
-- Federal/state programs where the amount depends on individual circumstances
-- Programs where the source page is vague or uses non-standard language
+### Quarantine is not a synonym for invalid
+Rows in `quarantine.csv` are not necessarily wrong — they failed a validation rule. Common reasons:
+- DSIRE returned a regulation or policy (Net Metering, Building Energy Code) — out of scope per spec §3.1.
+- Source page has no fixed dollar amount (e.g. "contact your utility for details").
+- Federal/state programs where amount depends on individual circumstances.
+- LLM extracted an `incentive_type` outside the 5 spec values that the alias map didn't recognise.
 
-Always inspect the `review_needed = Yes` rows in the Excel output before using the data downstream.
+Always inspect `quarantine.csv` (or the yellow-highlighted rows in the XLSX) before treating the Layer 1 CSV as complete.

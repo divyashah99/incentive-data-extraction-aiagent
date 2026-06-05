@@ -31,12 +31,13 @@ HEADER_MAP: dict[str, list[str]] = {
 
 # Incentive type keywords for heuristic classification when no type column exists
 _GRANT_KW     = re.compile(r"\bgrant\b", re.I)
-_REBATE_KW    = re.compile(r"\brebate\b|\bcash back\b", re.I)
+_REBATE_KW    = re.compile(r"\brebate\b|\bcash back\b|\bbill credit\b", re.I)
 _TAXCRED_KW   = re.compile(r"\btax credit\b|\btax deduct\b|\btax exempt\b", re.I)
 _FINANCE_KW   = re.compile(r"\bloan\b|\bfinancin\b|\bpace\b|\binstalment\b", re.I)
 _INVEST_KW    = re.compile(r"\binvestment\b|\bbond\b|\bfund\b", re.I)
 
-VALID_INCENTIVE_TYPES = {"Grants", "Rebates", "Finance Solutions", "Tax Credits", "Investments"}
+# Re-exported for legacy callers; canonical home is validators.type_normalizer.
+from validators.type_normalizer import VALID_INCENTIVE_TYPES, normalize_incentive_type
 
 
 def _infer_incentive_type(text: str) -> str | None:
@@ -116,6 +117,7 @@ def _row_to_record(row: dict, source_url: str, source_name: str) -> dict:
         "state":                "Florida",
         "city":                 None,
         "incentive_type":       None,
+        "service_category":     None,
         "property_type":        None,
         "description":          None,
         "eligibility_criteria": None,
@@ -148,6 +150,12 @@ def _row_to_record(row: dict, source_url: str, source_name: str) -> dict:
     # If no program_name was found, skip this row
     if not record["program_name"]:
         return {}
+
+    # Normalize whatever made it into incentive_type (e.g. "Rebate Program" → "Rebates")
+    if record["incentive_type"]:
+        normalized = normalize_incentive_type(record["incentive_type"])
+        if normalized:
+            record["incentive_type"] = normalized
 
     # Infer incentive_type from the row text if not captured
     if not record["incentive_type"]:

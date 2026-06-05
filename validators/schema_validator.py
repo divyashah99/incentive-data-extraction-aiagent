@@ -1,37 +1,37 @@
 """
-Pydantic v2 schema validation for extracted incentive records.
+Pydantic v2 schema validation for extracted incentive records (spec v2.7 §4).
 
-review_needed is set purely by rule — no LLM confidence score involved.
-Rule: mark "Yes" if any field that MUST be present to be actionable is
-missing or invalid. Fields that are legitimately absent for many programs
-(city, property_type, eligibility_criteria, valid_until, updated_at) do
-NOT trigger a flag on their own.
-
-Records are never dropped — always included with review_needed set.
+The main CSV holds only clean rows. Anything missing a required field, with
+an unmapped ``incentive_type``, or flagged out-of-scope upstream goes to a
+separate quarantine file via ``_quarantine_reasons`` (a private attribute,
+never serialised to the main CSV). Records are never silently dropped.
 """
 import logging
-from typing import Literal
+from typing import Any
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, PrivateAttr, field_validator, model_validator
+
+from validators.type_normalizer import (
+    VALID_INCENTIVE_TYPES,
+    normalize_incentive_type,
+)
 
 logger = logging.getLogger(__name__)
 
-VALID_INCENTIVE_TYPES = {"Grants", "Rebates", "Finance Solutions", "Tax Credits", "Investments"}
-
-# Exact CSV column order from spec
+# Spec §4 column order — no review_needed; includes service_category.
 CSV_COLUMNS = [
     "program_name",
     "state",
     "city",
     "zip_code",
     "incentive_type",
+    "service_category",
     "property_type",
     "description",
     "eligibility_criteria",
     "incentive_amount",
     "valid_until",
     "updated_at",
-    "review_needed",
     "program_links",
 ]
 
@@ -42,104 +42,182 @@ class IncentiveRecord(BaseModel):
     city: str | None = None
     zip_code: str | None = None
     incentive_type: str | None = None
+    service_category: str | None = None
     property_type: str | None = None
     description: str | None = None
     eligibility_criteria: str | None = None
     incentive_amount: str | None = None
     valid_until: str | None = None
     updated_at: str | None = None
-    review_needed: Literal["Yes", "No"] = "No"
     program_links: str | None = None
+
+    # Quarantine reasons live off-schema so they never reach the main CSV.
+    # Upstream validators (amount, scope filter, schema) append to this list;
+    # OutputWriter splits records on whether the list is non-empty.
+    _quarantine_reasons: list[str] = PrivateAttr(default_factory=list)
 
     model_config = {"str_strip_whitespace": True, "extra": "ignore"}
 
     @field_validator("incentive_type", mode="before")
     @classmethod
-    def normalise_incentive_type(cls, v):
+    def _normalise_incentive_type(cls, v):
         if v is None:
             return None
-        # Accept minor case variations, e.g. "tax credits" → "Tax Credits"
-        for valid in VALID_INCENTIVE_TYPES:
-            if v.strip().lower() == valid.lower():
-                return valid
-        return v  # keep as-is; model_validator will flag it
+        # normalize_incentive_type returns the canonical value or None.
+        # Returning None here triggers the quarantine reason in the model
+        # validator below; we preserve the raw value via the reason string.
+        normalised = normalize_incentive_type(v)
+        return normalised if normalised is not None else v
 
     @model_validator(mode="after")
-    def compute_review_needed(self) -> "IncentiveRecord":
+    def _compute_quarantine_reasons(self) -> "IncentiveRecord":
         """
-        Pure rule-based review flag. Fires when any field that makes a record
-        actionable is missing or invalid. Deliberately does NOT flag absence of
-        optional fields (city, property_type, eligibility_criteria, valid_until,
-        updated_at) — those are legitimately null for many programs.
+        Append quarantine reasons for any required-field or scope failures
+        that are detectable from the validated record itself. Upstream stages
+        (api_scraper, amount_validator) may have already attached more specific
+        reasons via _quarantine_reasons; we skip generic reasons that would be
+        redundant noise next to those.
         """
-        flags: list[str] = []
+        has_out_of_scope = any(
+            r.startswith("out of scope") for r in self._quarantine_reasons
+        )
+        has_amount_reason = any(
+            r.startswith("amount:") for r in self._quarantine_reasons
+        )
 
-        # 1. Program must have an identifiable name
         if not self.program_name:
-            flags.append("missing program_name")
+            self._quarantine_reasons.append("missing program_name")
 
-        # 2. Incentive type must map to one of the 5 valid categories
-        if not self.incentive_type or self.incentive_type not in VALID_INCENTIVE_TYPES:
-            flags.append("missing or invalid incentive_type")
+        # Skip the generic "missing/unmapped incentive_type" reason when the
+        # row was already classified out of scope (the scope reason is more
+        # specific and the type is intentionally blank in that case).
+        if not has_out_of_scope:
+            if not self.incentive_type or self.incentive_type not in VALID_INCENTIVE_TYPES:
+                self._quarantine_reasons.append(
+                    f"unmapped incentive_type: {self.incentive_type!r}"
+                    if self.incentive_type
+                    else "missing incentive_type"
+                )
 
-        # 3. Description must have meaningful content
         if not self.description or len(self.description.strip()) < 10:
-            flags.append("missing or too-short description")
+            self._quarantine_reasons.append("missing or too-short description")
 
-        # 4. Incentive amount is the core data point — flag if absent
-        if not self.incentive_amount:
-            flags.append("missing incentive_amount")
+        # Skip the generic missing_amount when amount_validator already filed a
+        # more specific amount reason for the same row.
+        if not self.incentive_amount and not has_amount_reason:
+            self._quarantine_reasons.append("missing incentive_amount")
 
-        # 5. State should be Florida (or null for unresolved) — flag if explicitly wrong
         if self.state and self.state.strip().lower() not in ("florida", "fl", "federal"):
-            flags.append(f"unexpected state: {self.state}")
+            self._quarantine_reasons.append(f"unexpected state: {self.state}")
 
-        if flags:
-            self.review_needed = "Yes"
+        if self._quarantine_reasons:
             logger.debug(
-                "review_needed=Yes for '%s': %s",
-                self.program_name or "(unnamed)", "; ".join(flags),
+                "quarantine '%s': %s",
+                self.program_name or "(unnamed)",
+                "; ".join(self._quarantine_reasons),
             )
-
         return self
 
+    # ── Helpers used by the rest of the pipeline ─────────────────────────────
+
+    @property
+    def quarantine_reasons(self) -> list[str]:
+        """Public read-only view of the quarantine reasons list."""
+        return list(self._quarantine_reasons)
+
+    def add_quarantine_reason(self, reason: str) -> None:
+        """Append a reason from an upstream stage (amount validator, scraper)."""
+        if reason and reason not in self._quarantine_reasons:
+            self._quarantine_reasons.append(reason)
+
+    @property
+    def is_quarantined(self) -> bool:
+        return bool(self._quarantine_reasons)
+
     def to_csv_row(self) -> dict:
-        """Return dict with exactly the CSV columns in the required order."""
+        """Return dict with exactly the spec §4 CSV columns in order."""
         data = self.model_dump()
         return {col: (data.get(col) or "") for col in CSV_COLUMNS}
 
 
+def _extract_pre_reasons(raw: dict) -> list[str]:
+    """
+    Pull and remove the upstream-collected quarantine reasons from a raw dict.
+    Earlier stages (amount validator, scope filter) attach reasons via the
+    ``_quarantine_reasons`` key so Pydantic ignores it but we can re-attach
+    after model construction.
+    """
+    pre = raw.pop("_quarantine_reasons", None)
+    if isinstance(pre, list):
+        return [str(r) for r in pre if r]
+    return []
+
+
+def _prune_redundant_reasons(reasons: list[str]) -> list[str]:
+    """
+    Drop generic reasons that are made redundant by a more specific upstream
+    reason on the same record:
+      • Any 'out of scope: <type>' subsumes 'missing incentive_type'
+        (the type is intentionally blank for out-of-scope rows).
+      • Any 'amount: <flag>' subsumes 'missing incentive_amount'
+        (the amount validator already filed a specific reason).
+    Preserves order.
+    """
+    has_out_of_scope = any(r.startswith("out of scope") for r in reasons)
+    has_amount_flag = any(r.startswith("amount:") for r in reasons)
+    pruned: list[str] = []
+    for r in reasons:
+        if has_out_of_scope and r in ("missing incentive_type",):
+            continue
+        if has_amount_flag and r == "missing incentive_amount":
+            continue
+        pruned.append(r)
+    return pruned
+
+
 def validate_record(raw: dict) -> IncentiveRecord | None:
     """
-    Validate one raw dict. Returns IncentiveRecord (review_needed already set
-    by the model_validator) or None on catastrophic parse failure.
+    Validate one raw dict. Returns IncentiveRecord (with quarantine reasons
+    already attached) or None on catastrophic parse failure.
     """
+    pre_reasons = _extract_pre_reasons(raw)
     try:
-        return IncentiveRecord.model_validate(raw)
+        record = IncentiveRecord.model_validate(raw)
     except Exception as exc:
         logger.warning("Pydantic validation failed: %s | error: %s", raw, exc)
-        # Last-resort: preserve whatever fields we can
         try:
-            return IncentiveRecord(
+            record = IncentiveRecord(
                 program_name=raw.get("program_name"),
                 state=raw.get("state"),
                 city=raw.get("city"),
                 zip_code=raw.get("zip_code"),
                 incentive_type=raw.get("incentive_type"),
+                service_category=raw.get("service_category"),
                 description=raw.get("description"),
                 incentive_amount=raw.get("incentive_amount"),
                 program_links=raw.get("program_links"),
                 updated_at=raw.get("updated_at"),
-                review_needed="Yes",
             )
+            record.add_quarantine_reason(f"pydantic fallback: {exc}")
         except Exception:
             return None
+
+    for reason in pre_reasons:
+        record.add_quarantine_reason(reason)
+
+    # After all reasons (model-validator + upstream pre_reasons) are attached,
+    # collapse redundancies so quarantine.csv shows one specific reason per
+    # underlying issue, not a stack of overlapping ones.
+    pruned = _prune_redundant_reasons(record._quarantine_reasons)
+    record._quarantine_reasons = pruned
+    return record
 
 
 def validate_batch(raw_records: list[dict], source_id: str = "") -> tuple[list[IncentiveRecord], int]:
     """
     Validate a list of raw dicts. Returns (validated_records, failed_count).
-    confidence_score is intentionally ignored — review_needed is rule-based only.
+    Records may or may not have quarantine reasons attached; callers split on
+    ``record.is_quarantined``.
     """
     validated: list[IncentiveRecord] = []
     failed = 0
@@ -152,11 +230,13 @@ def validate_batch(raw_records: list[dict], source_id: str = "") -> tuple[list[I
             failed += 1
             logger.warning("Dropped unparseable record from '%s': %s", source_id, raw)
 
+    quarantined = sum(1 for r in validated if r.is_quarantined)
     logger.info(
-        "Validation [%s]: %d validated, %d failed, %d need review",
+        "Validation [%s]: %d records, %d clean, %d quarantine, %d unparseable",
         source_id or "?",
         len(validated),
+        len(validated) - quarantined,
+        quarantined,
         failed,
-        sum(1 for r in validated if r.review_needed == "Yes"),
     )
     return validated, failed

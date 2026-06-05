@@ -7,7 +7,8 @@ Rules are faster and more reliable for numbers."
 Does three things:
   1. NORMALISE  — clean up inconsistent formatting ($300.00 → $300, "30 %" → "30%")
   2. EXTRACT    — pull the numeric value(s) out for sanity checking
-  3. FLAG       — mark suspicious amounts for human review (review_needed = "Yes")
+  3. FLAG       — append a quarantine reason for suspicious amounts so the
+                  schema validator can route the row to quarantine.csv
 
 Plugs into the pipeline AFTER LLM extraction and Pydantic validation.
 """
@@ -19,9 +20,18 @@ logger = logging.getLogger(__name__)
 
 # ── Regex patterns ─────────────────────────────────────────────────────────────
 
-# Matches dollar amounts: $300, $1,200, $10,000.50, $1.2M
+# Matches dollar amounts in both orderings:
+#   $300, $1,200, $10,000.50, $1.2M          (leading $)
+#   5000 $, 5000.0000 $, 20000.0000 $         (trailing $ — DSIRE API format)
+# We try the leading form first because it's the common LLM/source format and
+# its M/K multiplier (`$1.2M`) is unambiguous; the trailing form has no
+# multiplier suffix and is only emitted by DSIRE's structured parameter values.
 _DOLLAR_RE = re.compile(
-    r"\$\s*(?P<val>[\d,]+(?:\.\d+)?)\s*(?P<mult>[MmKk])?",
+    r"(?:"
+    r"\$\s*(?P<val>[\d,]+(?:\.\d+)?)\s*(?P<mult>[MmKk])?"
+    r"|"
+    r"(?P<val2>[\d,]+(?:\.\d+)?)\s*\$"
+    r")",
     re.I,
 )
 # Matches percentages: 30%, 30 %, 30.5%
@@ -93,7 +103,10 @@ def validate_amount(raw_amount: str | None) -> AmountValidationResult:
         values: list[float] = []
         for m in dollar_matches:
             try:
-                v = float(m.group("val").replace(",", "")) * _parse_multiplier(m.group("mult") or "")
+                raw_val = m.group("val") or m.group("val2")
+                if not raw_val:
+                    continue
+                v = float(raw_val.replace(",", "")) * _parse_multiplier(m.group("mult") or "")
                 values.append(v)
             except (ValueError, TypeError):
                 continue
@@ -121,7 +134,7 @@ def validate_amount(raw_amount: str | None) -> AmountValidationResult:
     # ── Try dollar amount first ─────────────────────────────────────────────
     dollar_match = _DOLLAR_RE.search(text)
     if dollar_match:
-        raw_val  = dollar_match.group("val").replace(",", "")
+        raw_val  = (dollar_match.group("val") or dollar_match.group("val2") or "").replace(",", "")
         mult     = dollar_match.group("mult") or ""
         value    = float(raw_val) * _parse_multiplier(mult)
 
@@ -186,8 +199,12 @@ def validate_amount(raw_amount: str | None) -> AmountValidationResult:
             flag_reason=reason,
         )
 
-    # ── No number found — still keep text but flag it ───────────────────────
-    logger.debug("Amount has no parseable number: %r", text)
+    # ── No number found — narrative amount, spec-compliant per §4.1 ─────────
+    # Spec §4.1: incentive_amount may be "amount, percentage, range, **or
+    # narrative text** is OK". So values like "Varies", "Free", "Contact
+    # utility", "Up to 20 years to repay" are legitimate Layer 1 content and
+    # must NOT be quarantined just because they lack a parseable number.
+    logger.debug("Amount has no parseable number (narrative — kept): %r", text)
     return AmountValidationResult(
         original=raw_amount,
         normalised=text,        # keep as-is
@@ -195,15 +212,16 @@ def validate_amount(raw_amount: str | None) -> AmountValidationResult:
         is_percentage=False,
         is_per_year=is_peryear,
         is_up_to=is_upto,
-        flag=True,
-        flag_reason="no numeric value found in amount string",
+        flag=False,
+        flag_reason=None,
     )
 
 
 def apply_amount_validation(record: dict) -> dict:
     """
     Run amount validation on one record dict (post-LLM or post-table).
-    Normalises incentive_amount in-place and sets review_needed="Yes" if flagged.
+    Normalises incentive_amount in-place and appends a quarantine reason if
+    the sanity check fails (consumed downstream by the schema validator).
     Returns the (possibly modified) record.
     """
     result = validate_amount(record.get("incentive_amount"))
@@ -218,7 +236,8 @@ def apply_amount_validation(record: dict) -> dict:
 
     # Flag for human review if sanity check failed
     if result.flag:
-        record["review_needed"] = "Yes"
+        reasons = record.setdefault("_quarantine_reasons", [])
+        reasons.append(f"amount: {result.flag_reason}")
         logger.info(
             "Amount flagged for '%s': %s",
             record.get("program_name", "?"), result.flag_reason,

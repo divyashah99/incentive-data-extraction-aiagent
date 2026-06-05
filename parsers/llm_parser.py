@@ -66,10 +66,24 @@ class IncentiveExtraction(BaseModel):
     incentive_type: str | None = Field(
         None,
         description=(
-            "Must be exactly one of: Grants, Rebates, Finance Solutions, Tax Credits, Investments. "
-            "Grants=upfront money not repaid. Rebates=cash back after purchase. "
-            "Finance Solutions=pay over time. Tax Credits=reduce taxes owed. "
-            "Investments=large-scale project funding. Null if none apply."
+            "EXACTLY one of: Grants, Rebates, Finance Solutions, Tax Credits, Investments. "
+            "Never invent labels like 'Bill Credits', 'Discount', 'Subsidy' — map to the closest of the five. "
+            "Grants=upfront money not repaid. "
+            "Rebates=cash returned after purchase (utility bill credits are Rebates). "
+            "Finance Solutions=pay over time (loans, PACE, second mortgages). "
+            "Tax Credits=reduce taxes owed (also tax exemptions/deductions). "
+            "Investments=large-scale equity, bonds, or revolving funds. "
+            "Null only if the page describes no incentive at all."
+        ),
+    )
+    service_category: str | None = Field(
+        None,
+        description=(
+            "Home upgrade categories the program pays for, AS WORDED ON THE SOURCE PAGE "
+            "(spec §4.4). Examples: 'Residential solar', 'Heat pump water heater', "
+            "'Roof replacement', 'Impact windows', 'Weatherization', 'EV charger'. "
+            "Multiple categories: semicolon-separated (e.g. 'Roofing;Windows;HVAC'). "
+            "Null only if the source does not name specific upgrade categories."
         ),
     )
     property_type: str | None = Field(
@@ -140,39 +154,46 @@ Field rules:
    null for statewide/federal.
 4. zip_code: only if listed verbatim on the page. NEVER derive from city
    or county names.
-5. incentive_type: exactly one of:
+5. incentive_type: EXACTLY one of these five values — nothing else:
      • Grants — upfront money not repaid
-     • Rebates — cash back after purchase
-     • Finance Solutions — pay over time (loans, PACE)
-     • Tax Credits — reduce taxes owed
-     • Investments — large-scale equity or bond funding
-   Null if none apply.
-6. property_type: source's wording (e.g. "Residential", "Commercial").
+     • Rebates — cash returned after purchase (utility BILL CREDITS are Rebates)
+     • Finance Solutions — pay over time (loans, PACE, second mortgages)
+     • Tax Credits — reduce taxes owed (also tax exemptions / deductions)
+     • Investments — large-scale equity, bonds, or revolving funds
+   Never invent labels like "Bill Credits", "Discount", "Subsidy", "Loan" —
+   map to the closest of the five. Null only if the page describes no
+   incentive at all.
+6. service_category: home-upgrade categories the program funds, AS WORDED ON
+   THE SOURCE (e.g. "Residential solar", "Heat pump water heater", "Roof
+   replacement", "Impact windows", "Weatherization", "EV charger"). Multiple:
+   semicolon-separated ("Roofing;Windows;HVAC"). Null only if the source
+   names no specific upgrade categories.
+7. property_type: source's wording (e.g. "Residential", "Commercial").
    Never use vague terms like "Other", "N/A", "Unknown" — use null instead.
-7. description: full summary of what THIS pathway offers — scope, what it
+8. description: full summary of what THIS pathway offers — scope, what it
    funds, and any exclusions ("not eligible: X") stated on the page. For
    split records, describe the pathway specifically, not the parent program
    in general.
-8. eligibility_criteria: ALL eligibility statements — both inclusions and
+9. eligibility_criteria: ALL eligibility statements — both inclusions and
    exclusions, damage/income thresholds, minimums, compliance rules. Capture
    every condition stated for THIS pathway. Do not summarise away.
-   Both 7 and 8 must be plain narrative — NEVER include URLs or phrases
+   Both 8 and 9 must be plain narrative — NEVER include URLs or phrases
    like "visit", "apply at", "click here". The dashboard has its own apply
    button; state facts, not navigation.
-9. incentive_amount: amount with ALL qualifiers — caps, percentages,
-   minimums, alternate formulas. Examples:
-     • "Up to $150,000 or 50% of pre-storm value"
-     • "Up to $50,000 ($10,000 minimum)"
-   Split vs. concatenate:
-     • Separate pathways → split into multiple records (per rule 1), each
-       with only its own amount.
-     • Tiers WITHIN one award (equipment specs, property-type variants) →
-       keep one record, concatenate with "; "
-       (e.g. "$40 (SEER 16); $550 (SEER 17+)").
-10. valid_until: expiry date if stated, else null.
-11. updated_at: page's last-updated date if shown, converted to YYYY-MM-DD.
+10. incentive_amount: amount with ALL qualifiers — caps, percentages,
+    minimums, alternate formulas. Examples:
+      • "Up to $150,000 or 50% of pre-storm value"
+      • "Up to $50,000 ($10,000 minimum)"
+    Split vs. concatenate:
+      • Separate pathways → split into multiple records (per rule 1), each
+        with only its own amount.
+      • Tiers WITHIN one award (equipment specs, property-type variants) →
+        keep one record, concatenate with "; "
+        (e.g. "$40 (SEER 16); $550 (SEER 17+)").
+11. valid_until: expiry date if stated, else null.
+12. updated_at: page's last-updated date if shown, converted to YYYY-MM-DD.
     NEVER use today's date — null if not shown.
-12. program_links: direct apply/info URL, or the source URL as fallback.
+13. program_links: direct apply/info URL, or the source URL as fallback.
 
 Return an empty list if the page has no incentive programs.
 """
